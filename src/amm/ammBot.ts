@@ -61,7 +61,9 @@ export class AMMBot {
         this.botName = botName;
         this.poolAnalyzer = new AMMPoolAnalyzer();
         this.liquidityProvider = new AMMPoliquidityProvider();
-        this.arbitrageExecutor = new AMMArbitrageExecutor();
+        this.arbitrageExecutor = new AMMArbitrageExecutor({
+            minProfitThreshold: config.arbitrage.minProfitPercent
+        });
     }
 
     /**

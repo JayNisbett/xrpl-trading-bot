@@ -15,10 +15,20 @@ export interface ArbitrageExecution {
  * AMM ARBITRAGE EXECUTOR
  * Executes arbitrage trades across AMM pools
  */
+export interface AMMArbitrageExecutorOptions {
+    minProfitThreshold?: number; // percent
+    maxSlippage?: number; // decimal (e.g. 0.02 = 2%)
+}
+
 export class AMMArbitrageExecutor {
-    private minProfitThreshold = 0.5; // Minimum 0.5% profit after fees
-    private maxSlippage = 0.02; // Maximum 2% slippage
+    private minProfitThreshold: number;
+    private maxSlippage: number;
     private executionHistory: ArbitrageExecution[] = [];
+
+    constructor(options?: AMMArbitrageExecutorOptions) {
+        this.minProfitThreshold = options?.minProfitThreshold ?? 0.5;
+        this.maxSlippage = options?.maxSlippage ?? 0.02;
+    }
 
     /**
      * Execute an arbitrage opportunity

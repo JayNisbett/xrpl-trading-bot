@@ -58,52 +58,36 @@ export async function discoverAMMPools(client: Client): Promise<Array<{ currency
     console.log('🔍 Starting dynamic AMM pool discovery...');
     
     try {
-        // Use account_lines to find active trustlines from major AMM accounts
-        // This is a more efficient way to discover active tokens than scanning all accounts
-        
-        // Start with known major AMM participants and gateway accounts
-        const seedAccounts = [
-            'rhub8VRN55s94qWKDv6jmDy1pUykJzF3wq', // Gatehub
-            'rvYAfWj5gh67oV6fW32ZzP3Aw4Eubs59B', // Bitstamp
-            'rchGBxcD1A1C2tdxF6papQYZ8kjRKMYcL', // Bitstamp (BTC)
-            'rcEGREd8NmkKRE8GE424sksyt1tJVFZwu', // Circle (USDC)
-            'rsoLo2S1kiGeCcn6hCUXVrCpGMWLrRrLZz', // Sologenic
-            'rCSCManTZ8ME9EoLrSHHYKW8PPwWMgkwr', // CasinoCoin
-        ];
-        
-        for (const _account of seedAccounts) {
+        // Probe each known token once for XRP/token AMM existence.
+        // (Previous implementation repeated this loop per seed account,
+        // creating redundant requests and reducing scan throughput.)
+        for (const token of KNOWN_TOKENS) {
+            const tokenKey = `${token.currency}:${token.issuer}`;
+            if (seenTokens.has(tokenKey)) continue;
+
             try {
-                // For each seed account, check if they have AMM pools
-                for (const token of KNOWN_TOKENS) {
-                    const tokenKey = `${token.currency}:${token.issuer}`;
-                    if (seenTokens.has(tokenKey)) continue;
-                    
-                    try {
-                        // Try to get AMM info for XRP/TOKEN pair
-                        const ammInfoResponse: any = await client.request({
-                            command: 'amm_info',
-                            asset: { currency: 'XRP' },
-                            asset2: { currency: token.currency, issuer: token.issuer }
-                        });
-                        
-                        if (ammInfoResponse?.result?.amm) {
-                            discoveredTokens.push(token);
-                            seenTokens.add(tokenKey);
-                            console.log(`  ✅ Found active AMM: XRP/${token.name}`);
-                        }
-                    } catch (ammError: any) {
-                        // Pool doesn't exist, skip
-                        if (!ammError.message?.includes('actNotFound')) {
-                            // Only log unexpected errors
-                            // console.log(`  ⏭️  No AMM for ${token.name}`);
-                        }
-                    }
+                const ammInfoResponse: any = await client.request({
+                    command: 'amm_info',
+                    asset: { currency: 'XRP' },
+                    asset2: { currency: token.currency, issuer: token.issuer }
+                });
+
+                if (ammInfoResponse?.result?.amm) {
+                    discoveredTokens.push(token);
+                    seenTokens.add(tokenKey);
+                    console.log(`  ✅ Found active AMM: XRP/${token.name}`);
                 }
-            } catch (error) {
-                // Continue with next seed account
+            } catch (ammError: any) {
+                // Pool doesn't exist, skip quietly.
+                if (!ammError.message?.includes('actNotFound')) {
+                    // Unexpected errors can be surfaced later if needed.
+                }
             }
+
+            // keep a small gap between probes to avoid node overload
+            await delay(80);
         }
-        
+
         console.log(`✅ Discovery complete: Found ${discoveredTokens.length} active AMM pools`);
         return discoveredTokens;
         

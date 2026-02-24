@@ -46,7 +46,7 @@ interface Transaction {
 
 interface Activity {
   id: string
-  type: 'snipe' | 'profit_take' | 'stop_loss' | 'error' | 'status'
+  type: 'snipe' | 'profit_take' | 'stop_loss' | 'error' | 'status' | 'arbitrage' | 'lp_enter' | 'lp_exit'
   message: string
   timestamp: Date
   data?: any
@@ -62,6 +62,9 @@ interface BotStatus {
   sniperActive: boolean
   copyTradingActive: boolean
 }
+
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3000'
+const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || API_BASE
 
 function App() {
   const [socket, setSocket] = useState<Socket | null>(null)
@@ -90,7 +93,7 @@ function App() {
 
   useEffect(() => {
     // Connect to WebSocket
-    const newSocket = io('http://localhost:3000')
+    const newSocket = io(SOCKET_URL)
     setSocket(newSocket)
 
     newSocket.on('connect', () => {
@@ -176,7 +179,7 @@ function App() {
 
   const toggleSniper = async () => {
     try {
-      const response = await fetch('http://localhost:3000/api/controls/sniper', {
+      const response = await fetch(`${API_BASE}/api/controls/sniper`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: botStatus.sniperActive ? 'stop' : 'start' })
@@ -194,7 +197,7 @@ function App() {
 
   const toggleCopyTrading = async () => {
     try {
-      const response = await fetch('http://localhost:3000/api/controls/copytrading', {
+      const response = await fetch(`${API_BASE}/api/controls/copytrading`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: botStatus.copyTradingActive ? 'stop' : 'start' })
@@ -215,11 +218,11 @@ function App() {
     const fetchData = async () => {
       try {
         const [positionsRes, statusRes, metricsRes, txRes, historyRes] = await Promise.all([
-          fetch('http://localhost:3000/api/positions'),
-          fetch('http://localhost:3000/api/status'),
-          fetch('http://localhost:3000/api/performance'),
-          fetch('http://localhost:3000/api/transactions'),
-          fetch('http://localhost:3000/api/history')
+          fetch(`${API_BASE}/api/positions`),
+          fetch(`${API_BASE}/api/status`),
+          fetch(`${API_BASE}/api/performance`),
+          fetch(`${API_BASE}/api/transactions`),
+          fetch(`${API_BASE}/api/history`)
         ])
 
         const positionsData = await positionsRes.json()

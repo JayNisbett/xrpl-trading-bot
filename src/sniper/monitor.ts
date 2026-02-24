@@ -2,11 +2,13 @@ import { Client } from 'xrpl';
 import { TokenInfo } from '../types';
 import { hexToString } from '../xrpl/utils';
 
-// Rate limiting with exponential backoff
+// Rate limiting with exponential backoff (env-tunable)
 let lastRequestTime = 0;
 let consecutiveErrors = 0;
-const BASE_REQUEST_INTERVAL = 200; // Base 200ms between batches
-const MAX_BACKOFF = 5000; // Max 5 second backoff
+const BASE_REQUEST_INTERVAL = parseInt(process.env.SNIPER_LEDGER_BASE_INTERVAL_MS || '150', 10); // lower = faster scans
+const MAX_BACKOFF = parseInt(process.env.SNIPER_LEDGER_MAX_BACKOFF_MS || '3000', 10);
+const LEDGERS_PER_SCAN = parseInt(process.env.SNIPER_LEDGERS_PER_SCAN || '6', 10);
+const INTER_LEDGER_DELAY_MS = parseInt(process.env.SNIPER_INTER_LEDGER_DELAY_MS || '100', 10);
 
 async function rateLimitedDelay(): Promise<void> {
     // Calculate delay with exponential backoff if we're getting rate limited
@@ -27,9 +29,9 @@ function recordRateLimitError(): void {
 }
 
 function recordSuccess(): void {
-    // Slowly reduce backoff on success
+    // Reduce backoff steadily on success
     if (consecutiveErrors > 0) {
-        consecutiveErrors = Math.max(0, consecutiveErrors - 0.5);
+        consecutiveErrors = Math.max(0, consecutiveErrors - 1);
     }
 }
 
@@ -48,15 +50,9 @@ export async function detectNewTokensFromAMM(client: Client): Promise<TokenInfo[
         const newTokens: TokenInfo[] = [];
         const currentLedgerIndex = (response.result as any).ledger.ledger_index;
         
-        // OPTIMIZED: Scan 5 ledgers for better coverage
-        // Still sequential to avoid rate limits but covers more ground
-        const ledgerIndices = [
-            currentLedgerIndex,
-            currentLedgerIndex - 1,
-            currentLedgerIndex - 2,
-            currentLedgerIndex - 3,
-            currentLedgerIndex - 4
-        ];
+        // Scan multiple recent ledgers for better coverage.
+        // Still sequential to avoid rate-limit bursts.
+        const ledgerIndices = Array.from({ length: LEDGERS_PER_SCAN }, (_, i) => currentLedgerIndex - i);
 
         let hadRateLimitInLoop = false;
 
@@ -90,7 +86,7 @@ export async function detectNewTokensFromAMM(client: Client): Promise<TokenInfo[
 
                 // Delay between each ledger request
                 if (i < ledgerIndices.length - 1) {
-                    await new Promise(resolve => setTimeout(resolve, 150));
+                    await new Promise(resolve => setTimeout(resolve, INTER_LEDGER_DELAY_MS));
                 }
 
                 recordSuccess(); // Reduce backoff on success for this ledger
