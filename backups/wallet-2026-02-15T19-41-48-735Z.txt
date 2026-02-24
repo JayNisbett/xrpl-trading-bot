@@ -1,0 +1,16 @@
+XRPL Wallet Information
+Generated: 2026-02-15T19:41:48.736Z
+
+Address: rDQqZ5a3bJfYJxuMfjs34WkVCcSg64Su8Q
+Public Key: EDED8E1D40021E4296B161055ED78D2D5A680C2DD4CB67B5E312E23E09D322FE17
+Private Key: ED332BA608D7FC2D9574762E801AAB3010126CF76AFF7B7B19ECFAA3EC65948E51
+Seed: sEdTmQTp1Zw6QRNWbkrb6hNgHoJaGQ7
+
+⚠️  KEEP THIS FILE SECURE AND PRIVATE!
+Do not share this information with anyone.
+Loss of the seed phrase means loss of access to funds.
+
+To use this wallet:
+1. Add WALLET_SEED=sEdTmQTp1Zw6QRNWbkrb6hNgHoJaGQ7 to your .env file
+2. Add WALLET_ADDRESS=rDQqZ5a3bJfYJxuMfjs34WkVCcSg64Su8Q to your .env file
+3. Fund the wallet with at least 10 XRP

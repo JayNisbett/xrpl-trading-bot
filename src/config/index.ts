@@ -22,7 +22,8 @@ const config: Config = {
         minTradingActivity: parseInt(process.env.MIN_TRADING_ACTIVITY || '3') || 3,
         maxSnipeAmount: parseFloat(process.env.MAX_SNIPE_AMOUNT || '5000') || 5000,
         emergencyStopLoss: parseFloat(process.env.EMERGENCY_STOP_LOSS || '0.3') || 0.3,
-        defaultSlippage: parseFloat(process.env.DEFAULT_SLIPPAGE || '4.0') || 4.0
+        defaultSlippage: parseFloat(process.env.DEFAULT_SLIPPAGE || '4.0') || 4.0,
+        useBestExecution: process.env.USE_BEST_EXECUTION !== 'false'
     },
 
     // Sniper Configuration
@@ -56,12 +57,42 @@ const config: Config = {
     wallet: {
         seed: process.env.WALLET_SEED || '',
         address: process.env.WALLET_ADDRESS
+    },
+
+    // AMM Bot Configuration
+    amm: {
+        enabled: process.env.AMM_BOT_ENABLED === 'true',
+        dynamicPoolDiscovery: process.env.AMM_DYNAMIC_POOL_DISCOVERY === 'true',
+        arbitrage: {
+            enabled: process.env.AMM_ARBITRAGE_ENABLED === 'true',
+            minProfitPercent: parseFloat(process.env.AMM_ARBITRAGE_MIN_PROFIT || '0.5'),
+            maxTradeAmount: parseFloat(process.env.AMM_ARBITRAGE_MAX_TRADE || '5'),
+            checkInterval: parseInt(process.env.AMM_ARBITRAGE_CHECK_INTERVAL || '5000')
+        },
+        liquidity: {
+            enabled: process.env.AMM_LIQUIDITY_ENABLED === 'true',
+            strategy: (process.env.AMM_LIQUIDITY_STRATEGY || 'one-sided') as 'one-sided' | 'balanced' | 'auto',
+            minTVL: parseFloat(process.env.AMM_LIQUIDITY_MIN_TVL || '100'),
+            maxPriceImpact: parseFloat(process.env.AMM_LIQUIDITY_MAX_PRICE_IMPACT || '0.05'),
+            targetAPR: parseFloat(process.env.AMM_LIQUIDITY_TARGET_APR || '20'),
+            maxPositions: parseInt(process.env.AMM_LIQUIDITY_MAX_POSITIONS || '5')
+        },
+        risk: {
+            maxImpermanentLoss: parseFloat(process.env.AMM_RISK_MAX_IL || '10'),
+            maxPositionSize: parseFloat(process.env.AMM_RISK_MAX_POSITION_SIZE || '3'),
+            diversification: process.env.AMM_RISK_DIVERSIFICATION === 'true'
+        }
     }
 };
 
-// Validate required configuration
-if (!config.wallet.seed) {
-    throw new Error('WALLET_SEED environment variable is required');
+// Validate required configuration (only when not generating a wallet)
+// Skip validation if running accountManager utility
+const isGeneratingWallet = process.argv.some(arg => 
+    arg.includes('accountManager') || arg === 'generate'
+);
+
+if (!config.wallet.seed && !isGeneratingWallet) {
+    throw new Error('WALLET_SEED environment variable is required. Run "npm run generate-wallet" to create a new wallet.');
 }
 
 // No validation needed for storage - will use default path

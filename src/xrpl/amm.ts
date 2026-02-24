@@ -1,9 +1,57 @@
 import { Client, Wallet, xrpToDrops } from 'xrpl';
 import { TokenInfo, TradeResult, LPBurnStatus } from '../types';
 import { getReadableCurrency, formatTokenAmountSimple } from './utils';
+import { executeBuyBestExecution, executeSellBestExecution } from './bestExecution';
+import config from '../config';
 
 /**
- * Execute AMM buy transaction
+ * Execute buy (XRP -> token), using path finding + AMM + book when useBestExecution is true.
+ */
+export async function executeBuy(
+    client: Client,
+    wallet: Wallet,
+    tokenInfo: TokenInfo,
+    xrpAmount: number,
+    slippage: number = 4.0
+): Promise<TradeResult> {
+    if (config.trading.useBestExecution !== false) {
+        return executeBuyBestExecution(
+            client,
+            wallet,
+            tokenInfo,
+            xrpAmount,
+            slippage,
+            executeAMMBuy
+        );
+    }
+    return executeAMMBuy(client, wallet, tokenInfo, xrpAmount, slippage);
+}
+
+/**
+ * Execute sell (token -> XRP), using path finding + AMM + book when useBestExecution is true.
+ */
+export async function executeSell(
+    client: Client,
+    wallet: Wallet,
+    tokenInfo: TokenInfo,
+    tokenAmount: number,
+    slippage: number = 4.0
+): Promise<TradeResult> {
+    if (config.trading.useBestExecution !== false) {
+        return executeSellBestExecution(
+            client,
+            wallet,
+            tokenInfo,
+            tokenAmount,
+            slippage,
+            executeAMMSell
+        );
+    }
+    return executeAMMSell(client, wallet, tokenInfo, tokenAmount, slippage);
+}
+
+/**
+ * Execute AMM buy transaction (direct AMM only; used as fallback or when useBestExecution is false)
  */
 export async function executeAMMBuy(
     client: Client,
@@ -59,7 +107,8 @@ export async function executeAMMBuy(
                 };
             }
 
-            await new Promise(resolve => setTimeout(resolve, 2000));
+            // OPTIMIZATION: Reduced delay from 2000ms to 500ms for faster execution
+            await new Promise(resolve => setTimeout(resolve, 500));
         }
 
         // Get AMM pool info
@@ -103,7 +152,8 @@ export async function executeAMMBuy(
         const result = await client.submitAndWait(signed.tx_blob);
 
         if ((result.result.meta as any).TransactionResult === 'tesSUCCESS') {
-            await new Promise(resolve => setTimeout(resolve, 2000));
+            // OPTIMIZATION: Reduced delay from 2000ms to 500ms for faster balance check
+            await new Promise(resolve => setTimeout(resolve, 500));
 
             // Get final balance
             const finalBalance = await client.request({
@@ -229,7 +279,8 @@ export async function executeAMMSell(
         const paymentResult = await client.submitAndWait(paymentSigned.tx_blob);
 
         if ((paymentResult.result.meta as any).TransactionResult === 'tesSUCCESS') {
-            await new Promise(resolve => setTimeout(resolve, 2000));
+            // OPTIMIZATION: Reduced delay from 2000ms to 500ms for faster balance check
+            await new Promise(resolve => setTimeout(resolve, 500));
 
             // Get final balance
             const finalTokenBalance = await client.request({

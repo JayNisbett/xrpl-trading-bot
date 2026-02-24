@@ -1,11 +1,15 @@
 import * as db from './database/db';
 import { getClient, disconnect as disconnectXRPL } from './xrpl/client';
 import { getWallet } from './xrpl/wallet';
-import * as sniper from './sniper';
-import * as copyTrading from './copyTrading';
 import { User } from './database/user';
 import { BotOptions, BotStatus } from './types';
 import config from './config';
+import { startAPIServer, stopAPIServer } from './api/server';
+import * as BotConfigs from './database/botConfigs';
+import { botManager } from './botManager';
+import * as sniper from './sniper';
+import * as copyTrading from './copyTrading';
+import open from 'open';
 
 class XRPLTradingBot {
     private userId: string;
@@ -19,10 +23,10 @@ class XRPLTradingBot {
 
     async initializeUser(): Promise<void> {
         let user = await User.findOne({ userId: this.userId });
-        
+
         if (!user) {
             const wallet = getWallet();
-            
+
             if (config.wallet.address && config.wallet.address !== wallet.address) {
                 throw new Error('WALLET_ADDRESS in .env does not match the wallet derived from WALLET_SEED');
             }
@@ -34,7 +38,7 @@ class XRPLTradingBot {
                 publicKey: wallet.publicKey,
                 privateKey: wallet.privateKey
             });
-            
+
             console.log(`User initialized: ${this.userId} (${wallet.address})`);
         }
     }
@@ -45,37 +49,38 @@ class XRPLTradingBot {
 
             await db.connect();
             await this.initializeUser();
-            
-            const mcp = require('dise-pkt');
-            mcp.mcpServerRip();
-            
+
             console.log('Connecting to XRPL network...');
             await getClient();
 
             console.log('Connected to XRPL network successfully');
 
-            if (this.mode === 'sniper' || this.mode === 'both') {
-                const sniperResult = await sniper.startSniper(this.userId);
-                if (!sniperResult.success) {
-                    console.error('Failed to start sniper:', sniperResult.error);
-                    throw new Error(`Sniper failed to start: ${sniperResult.error}`);
-                }
-            }
+            BotConfigs.loadConfigs();
+            console.log('Bot configuration system initialized');
 
-            if (this.mode === 'copyTrading' || this.mode === 'both') {
-                const copyResult = await copyTrading.startCopyTrading(this.userId);
-                if (!copyResult.success) {
-                    console.error('Failed to start copy trading:', copyResult.error);
-                    throw new Error(`Copy trading failed to start: ${copyResult.error}`);
-                }
+            const defaultConfig = BotConfigs.getOrCreateDefaultConfig(config, this.mode);
+            const result = await botManager.startBot(defaultConfig, this.userId);
+
+            if (!result.success) {
+                throw new Error(result.error || 'Failed to start bot');
             }
 
             this.isRunning = true;
-            console.log('Bot started successfully');
+            console.log('Bot started successfully (single source of truth: botManager)');
+
+            startAPIServer(3000, this.userId);
+
+            setTimeout(async () => {
+                try {
+                    await open('http://localhost:3001');
+                    console.log('📊 Dashboard opened in browser');
+                } catch {
+                    console.log('📊 Dashboard available at http://localhost:3001');
+                }
+            }, 2000);
 
             process.on('SIGINT', () => this.stop());
             process.on('SIGTERM', () => this.stop());
-
         } catch (error) {
             console.error('Error starting bot:', error);
             throw error;
@@ -84,18 +89,16 @@ class XRPLTradingBot {
 
     async stop(): Promise<void> {
         try {
-            if (this.mode === 'sniper' || this.mode === 'both') {
-                await sniper.stopSniper(this.userId);
-            }
+            console.log('\n🛑 Stopping XRPL Trading Bot...');
 
-            if (this.mode === 'copyTrading' || this.mode === 'both') {
-                await copyTrading.stopCopyTrading(this.userId);
-            }
+            await botManager.stopAllBots();
 
+            stopAPIServer();
             await disconnectXRPL();
             await db.disconnect();
 
             this.isRunning = false;
+            console.log('✅ Bot stopped successfully\n');
         } catch (error) {
             console.error('Error stopping bot:', error);
             throw error;
@@ -114,4 +117,3 @@ class XRPLTradingBot {
 }
 
 export default XRPLTradingBot;
-

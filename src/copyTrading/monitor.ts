@@ -7,13 +7,14 @@ const processedTransactions = new Set<string>();
 export async function checkTraderTransactions(
     client: Client,
     traderAddress: string,
-    startTime: Date | null = null
+    startTime: Date | null = null,
+    limit: number = 20
 ): Promise<CopyTradeData[]> {
     try {
         const response = await client.request({
             command: 'account_tx',
             account: traderAddress,
-            limit: 20,
+            limit,
             ledger_index_min: -1,
             ledger_index_max: -1,
             forward: false

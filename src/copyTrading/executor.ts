@@ -1,5 +1,5 @@
 import { Client, Wallet } from 'xrpl';
-import { executeAMMBuy, executeAMMSell } from '../xrpl/amm';
+import { executeBuy, executeSell } from '../xrpl/amm';
 import { IUser } from '../database/models';
 import { TradeInfo } from '../types';
 import config from '../config';
@@ -15,30 +15,37 @@ interface CopyTradeResult {
     error?: string;
 }
 
-export function calculateCopyTradeAmount(_user: IUser, tradeInfo: TradeInfo): number {
+/** Optional per-bot copy config (from getEffectiveCopyConfig). */
+export interface CopyConfigOverride {
+    tradingAmountMode: 'fixed' | 'percentage';
+    fixedAmount: number;
+    matchTraderPercentage: number;
+    maxSpendPerTrade: number;
+}
+
+export function calculateCopyTradeAmount(
+    _user: IUser,
+    tradeInfo: TradeInfo,
+    copyConfig?: CopyConfigOverride
+): number {
     try {
-        const mode = config.copyTrading.tradingAmountMode;
+        const mode = copyConfig?.tradingAmountMode ?? config.copyTrading.tradingAmountMode;
+        const fixedAmount = copyConfig?.fixedAmount ?? config.copyTrading.fixedAmount;
+        const matchPct = copyConfig?.matchTraderPercentage ?? config.copyTrading.matchTraderPercentage;
+        const maxSpend = copyConfig?.maxSpendPerTrade ?? config.copyTrading.maxSpendPerTrade;
 
         if (mode === 'fixed') {
-            return config.copyTrading.fixedAmount;
+            return fixedAmount;
         }
 
         if (mode === 'percentage') {
-            const percentage = config.copyTrading.matchTraderPercentage;
             const traderAmount = tradeInfo.xrpAmount || 0;
-            const calculatedAmount = (traderAmount * percentage) / 100;
-
-            const maxSpend = config.copyTrading.maxSpendPerTrade;
-            if (calculatedAmount > maxSpend) {
-                return maxSpend;
-            }
-
+            const calculatedAmount = (traderAmount * matchPct) / 100;
+            if (calculatedAmount > maxSpend) return maxSpend;
             return calculatedAmount;
         }
 
-        const defaultAmount = config.copyTrading.fixedAmount || 
-                             ((tradeInfo.xrpAmount || 0) * 0.1);
-        return defaultAmount;
+        return fixedAmount || (tradeInfo.xrpAmount || 0) * 0.1;
     } catch (error) {
         console.error('Error calculating copy trade amount:', error);
         return 0;
@@ -53,21 +60,23 @@ export async function executeCopyBuyTrade(
     wallet: Wallet,
     _user: IUser,
     tradeInfo: TradeInfo,
-    xrpAmount: number
+    xrpAmount: number,
+    defaultSlippage?: number
 ): Promise<CopyTradeResult> {
     try {
+        const slippage = defaultSlippage ?? config.trading.defaultSlippage;
         const tokenInfo = {
             currency: tradeInfo.currency,
             issuer: tradeInfo.issuer,
             readableCurrency: tradeInfo.readableCurrency
         };
 
-        const buyResult = await executeAMMBuy(
+        const buyResult = await executeBuy(
             client,
             wallet,
             tokenInfo,
             xrpAmount,
-            config.trading.defaultSlippage
+            slippage
         );
 
         if (buyResult.success) {
@@ -102,21 +111,23 @@ export async function executeCopySellTrade(
     wallet: Wallet,
     _user: IUser,
     tradeInfo: TradeInfo,
-    tokenAmount: number
+    tokenAmount: number,
+    defaultSlippage?: number
 ): Promise<CopyTradeResult> {
     try {
+        const slippage = defaultSlippage ?? config.trading.defaultSlippage;
         const tokenInfo = {
             currency: tradeInfo.currency,
             issuer: tradeInfo.issuer,
             readableCurrency: tradeInfo.readableCurrency
         };
 
-        const sellResult = await executeAMMSell(
+        const sellResult = await executeSell(
             client,
             wallet,
             tokenInfo,
             tokenAmount,
-            config.trading.defaultSlippage
+            slippage
         );
 
         if (sellResult.success) {
@@ -143,22 +154,7 @@ export async function executeCopySellTrade(
     }
 }
 
-/**
- * Check if token is blacklisted
- */
-export function isTokenBlacklisted(
-    blackListedTokens: any[] | undefined,
-    currency: string,
-    issuer: string
-): boolean {
-    if (!blackListedTokens || blackListedTokens.length === 0) {
-        return false;
-    }
-
-    return blackListedTokens.some(token =>
-        token.currency === currency && token.issuer === issuer
-    );
-}
+export { isTokenBlacklisted } from '../utils/tokenUtils';
 
 /**
  * Check if transaction was already copied

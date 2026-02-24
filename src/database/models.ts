@@ -22,6 +22,9 @@ export interface ITransaction {
     xrpSpent?: number;
     originalMethod?: string;
     originalXrpAmount?: number;
+    profit?: number;
+    profitPercent?: number;
+    sellReason?: string;
 }
 
 export interface ISniperPurchase {

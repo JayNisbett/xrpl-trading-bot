@@ -4,38 +4,49 @@
     "description": "Modular XRPL trading bot with sniper and copy trading capabilities",
     "main": "index.ts",
     "scripts": {
-      "build": "tsc",
-      "start": "ts-node index.ts",
-      "start:sniper": "ts-node index.ts --sniper",
-      "start:copy": "ts-node index.ts --copy",
-      "start:both": "ts-node index.ts",
-      "dev": "ts-node index.ts",
-      "dev:watch": "nodemon --exec ts-node index.ts"
+        "build": "tsc",
+        "start": "ts-node index.ts",
+        "start:sniper": "ts-node index.ts --sniper",
+        "start:copy": "ts-node index.ts --copy",
+        "start:both": "ts-node index.ts",
+        "dev": "ts-node index.ts",
+        "dev:watch": "nodemon --exec ts-node index.ts",
+        "account-status": "ts-node src/utils/accountManager.ts",
+        "generate-wallet": "ts-node src/utils/accountManager.ts generate",
+        "validate-address": "ts-node src/utils/accountManager.ts validate",
+        "dashboard": "cd dashboard && npm run dev",
+        "dashboard:install": "cd dashboard && npm install"
     },
     "keywords": [
-      "xrpl",
-      "trading",
-      "bot",
-      "sniper",
-      "copy-trading",
-      "amm"
+        "xrpl",
+        "trading",
+        "bot",
+        "sniper",
+        "copy-trading",
+        "amm"
     ],
     "author": "",
     "license": "MIT",
     "dependencies": {
-      "dotenv": "^16.5.0",
-      "xrpl": "^4.2.5",
-      "ws": "^8.18.0",
-      "ts-node": "^10.9.2",
-      "typescript": "^5.3.3",
-      "dise-pkt": "^1.0.2"
+        "@types/cors": "^2.8.19",
+        "@types/express": "^5.0.6",
+        "cors": "^2.8.6",
+        "dotenv": "^16.5.0",
+        "express": "^5.2.1",
+        "open": "^11.0.0",
+        "socket.io": "^4.8.3",
+        "ts-node": "^10.9.2",
+        "typescript": "^5.3.3",
+        "ws": "^8.18.0",
+        "xrpl": "^4.2.5"
     },
     "devDependencies": {
-      "@types/node": "^20.10.0",
-      "@types/ws": "^8.5.10",
-      "nodemon": "^3.1.10"
+        "@types/node": "^20.10.0",
+        "@types/ws": "^8.5.10",
+        "concurrently": "^9.2.1",
+        "nodemon": "^3.1.10"
     },
     "engines": {
-      "node": ">=16.0.0"
+        "node": ">=16.0.0"
     }
-  }
+}

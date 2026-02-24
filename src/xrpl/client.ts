@@ -16,7 +16,8 @@ export async function getClient(): Promise<Client> {
 
     connectingPromise = (async () => {
         persistentClient = new Client(config.xrpl.server, {
-            connectionTimeout: 30000
+            connectionTimeout: 30000,
+            timeout: 20000  // 20s timeout for requests (increased from default)
         });
         
         try {

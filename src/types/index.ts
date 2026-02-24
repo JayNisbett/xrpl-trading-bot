@@ -14,6 +14,7 @@ export interface Config {
         maxSnipeAmount: number;
         emergencyStopLoss: number;
         defaultSlippage: number;
+        useBestExecution?: boolean;
     };
     sniper: {
         checkInterval: number;
@@ -39,6 +40,29 @@ export interface Config {
     wallet: {
         seed: string;
         address?: string;
+    };
+    amm: {
+        enabled: boolean;
+        dynamicPoolDiscovery?: boolean;
+        arbitrage: {
+            enabled: boolean;
+            minProfitPercent: number;
+            maxTradeAmount: number;
+            checkInterval: number;
+        };
+        liquidity: {
+            enabled: boolean;
+            strategy: 'one-sided' | 'balanced' | 'auto';
+            minTVL: number;
+            maxPriceImpact: number;
+            targetAPR: number;
+            maxPositions: number;
+        };
+        risk: {
+            maxImpermanentLoss: number;
+            maxPositionSize: number;
+            diversification: boolean;
+        };
     };
 }
 

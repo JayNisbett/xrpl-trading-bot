@@ -1,14 +1,66 @@
-# XRPL Trading Bot v2.0
+# XRPL Trading Bot v3.0 - AMM Edition 🌊
 
-A modular, high-performance XRPL trading bot with sniper and copy trading capabilities. This version has been completely refactored from the original Telegram bot into a standalone, modular architecture.
+A sophisticated, high-performance XRPL trading bot with **AMM arbitrage**, **yield farming**, sniper, and copy trading capabilities. Now featuring automated liquidity provision and cross-pool arbitrage for consistent passive income!
+
+## ⚡ New to the Bot? Start Here!
+
+**🎯 Want to earn yield from AMM pools?** Read these first:
+- **[BOT_DETAIL_PAGES_UPDATE.md](BOT_DETAIL_PAGES_UPDATE.md)** - New UI & arbitrage fixes (LATEST! 📊)
+- **[POOL_SCANNING_GUIDE.md](POOL_SCANNING_GUIDE.md)** - Expand pool discovery for more opportunities (NEW! 🔍)
+- **[AMM_QUICK_START.md](AMM_QUICK_START.md)** - AMM setup in 5 minutes (NEW! 🌊)
+- **[AMM_STRATEGIES.md](AMM_STRATEGIES.md)** - Deep dive into arbitrage & yield farming (NEW!)
+- **[MULTI_BOT_GUIDE.md](MULTI_BOT_GUIDE.md)** - Run multiple bots with different strategies (NEW! 🤖)
+- **[QUICKSTART.md](QUICKSTART.md)** - General bot setup
+- **[DASHBOARD_GUIDE.md](DASHBOARD_GUIDE.md)** - Dashboard features & usage
+- **[CONFIGURATION_GUIDE.md](CONFIGURATION_GUIDE.md)** - Detailed configuration
+
+**Key Commands:**
+```bash
+npm start                 # Start all bots (sniper + AMM + dashboard) 🌊
+npm run start:sniper      # Start sniper bot only
+npm run dashboard         # Start dashboard only
+npm run account-status    # Check your wallet balance & health
+npm run generate-wallet   # Create a new XRPL wallet
+```
+
+**💡 Tip:** The AMM bot runs automatically when you `npm start` - just ensure `AMM_BOT_ENABLED=true` in your `.env`!
 
 ## 🚀 Features
 
+### NEW! Trading Terminal UI (v3.3) 📊
+- **Dedicated Bot Pages**: Each bot has its own full-page view with complete context
+- **Individual Bot P&L Charts**: Real-time profit/loss visualization per bot instance
+- **Chat-Style Activity Logs**: Collapsible messaging interface (minimize to 60px!)
+- **Arbitrage Intelligence**: Live stats showing opportunities found/filtered/executed
+- **Real-Time Monitoring**: WebSocket-powered instant updates
+- **Professional Design**: Dark gradient theme with trading terminal aesthetics
+- **XRPScan Integration**: Direct links to verify all transactions on-chain
+
+### Multi-Bot Configuration System (v3.1) 🤖
+- **Multiple Bot Instances**: Run several bots simultaneously with different strategies
+- **UI-Based Configuration**: Create and manage all settings from the dashboard
+- **Real-Time Control**: Start, stop, and restart bots without code changes
+- **Strategy Mixing**: Each bot can run sniper, copy trading, AMM, or all three
+- **Per-Bot Settings**: Customize risk levels, amounts, and parameters independently
+- **Live Monitoring**: Track all running instances and their performance
+
+### AMM Strategies (v3.0) 🌊
+- **Arbitrage Bot**: Automatically detects and exploits price differences between AMM pools (0.5-3% per trade)
+- **Liquidity Provider**: Earns passive income by providing liquidity to high-yield pools (20-35% APR)
+- **One-Sided Entries**: Deposit only XRP, no tokens needed
+- **Yield Optimization**: Auto-exits underperforming positions, compounds profits
+- **Impermanent Loss Protection**: Monitors and exits if IL exceeds threshold
+- **AMM Dashboard Page**: Dedicated UI for pools, positions, and arbitrage stats
+
+### Trading Features
+- **Real-Time Dashboard**: Beautiful React UI with live updates and multi-page navigation 📊
+- **Auto Profit-Taking**: Sells at +12% profit automatically 💰
+- **High-Frequency Trading**: Optimized for maximum trade opportunities ⚡
 - **Token Sniping**: Automatically detect and snipe new tokens from AMM pools
-- **Copy Trading**: Mirror trades from successful wallets in real-time
-- **Modular Architecture**: Clean, maintainable codebase split into logical modules
-- **High Performance**: Optimized for speed and efficiency
-- **Configurable**: Easy-to-use configuration system
+- **Position Tracking**: Real-time P/L monitoring with risk indicators
+- **Safety Checks**: Built-in balance and position limit protection
+- **Account Management**: Easy wallet generation and status monitoring
+- **WebSocket Updates**: Live data streaming for instant notifications
 
 ## 📁 Project Structure
 
@@ -16,18 +68,40 @@ A modular, high-performance XRPL trading bot with sniper and copy trading capabi
 xrpl-trading-bot/
 ├── src/
 │   ├── config/          # Configuration management
-│   ├── database/         # Database models and connection
-│   ├── xrpl/             # XRPL client, wallet, and AMM utilities
-│   ├── sniper/           # Token sniping module
-│   ├── copyTrading/      # Copy trading module
-│   ├── types/            # TypeScript type definitions
-│   └── bot.ts            # Main bot orchestrator
-├── dist/                 # Compiled JavaScript (after build)
-├── index.ts              # Entry point (TypeScript)
-├── filterAmmCreate.ts    # AMM transaction checker utility
-├── tsconfig.json          # TypeScript configuration
+│   ├── database/        # Database models and storage
+│   │   ├── botConfigs.ts        # 🆕 Bot configuration storage
+│   │   ├── models.ts            # Data models
+│   │   └── storage.ts           # State persistence
+│   ├── xrpl/            # XRPL client, wallet, and AMM utilities
+│   ├── amm/             # 🌊 AMM strategies (arbitrage, liquidity, yield)
+│   │   ├── ammBot.ts              # Main AMM orchestrator
+│   │   ├── poolAnalyzer.ts        # Pool metrics & analysis
+│   │   ├── liquidityProvider.ts   # LP deposit/withdrawal
+│   │   ├── arbitrageExecutor.ts   # Cross-pool arbitrage
+│   │   └── poolScanner.ts         # Pool discovery
+│   ├── sniper/          # Token sniping module
+│   ├── copyTrading/     # Copy trading module
+│   ├── api/             # REST API & WebSocket server
+│   ├── utils/           # Position tracking, profit management, safety checks
+│   ├── types/           # TypeScript type definitions
+│   ├── botManager.ts    # 🆕 Multi-bot instance manager
+│   └── bot.ts           # Main bot orchestrator
+├── dashboard/           # 📊 React dashboard (multi-page)
+│   ├── src/
+│   │   ├── pages/       # Overview, Positions, AMM Pools, Configs, Bots, etc.
+│   │   │   ├── BotConfigs.tsx   # 🆕 Configuration management UI
+│   │   │   └── AMMPools.tsx     # 🌊 AMM pools & arbitrage
+│   │   ├── components/  # Reusable UI components
+│   │   └── App.tsx      # Main dashboard app
+│   └── dist/            # Built dashboard files
+├── dist/                # Compiled JavaScript (after build)
+├── data/                # Bot state and transaction history
+│   ├── state.json              # User data and transactions
+│   └── bot-configs.json        # 🆕 Bot configurations
+├── index.ts             # Entry point (TypeScript)
+├── tsconfig.json        # TypeScript configuration
 ├── package.json
-└── .env                  # Environment configuration
+└── .env                 # Environment configuration
 ```
 
 **Note**: This project is written in TypeScript and compiles to JavaScript in the `dist/` folder.
