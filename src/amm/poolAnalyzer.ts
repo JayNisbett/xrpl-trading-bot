@@ -1,5 +1,6 @@
 import { Client } from 'xrpl';
-import { getAMMInfo } from '../xrpl/amm';
+import { getAMMInfoForPair } from '../xrpl/amm';
+import type { PoolPair } from './poolScanner';
 
 export interface PoolMetrics {
     ammId: string;
@@ -35,64 +36,66 @@ export class AMMPoolAnalyzer {
     private poolCache: Map<string, PoolMetrics> = new Map();
 
     /**
-     * Analyze a specific AMM pool
+     * Analyze a specific AMM pool by token (XRP/token pair)
      */
     async analyzePool(
         client: Client,
         tokenInfo: { currency: string; issuer: string; readableCurrency?: string }
     ): Promise<PoolMetrics | null> {
+        return this.analyzePoolByAssets(
+            client,
+            { currency: 'XRP' },
+            { currency: tokenInfo.currency, issuer: tokenInfo.issuer }
+        );
+    }
+
+    /**
+     * Analyze a specific AMM pool by asset pair (XRP/token or token/token)
+     */
+    async analyzePoolByAssets(
+        client: Client,
+        asset1: { currency: string; issuer?: string },
+        asset2: { currency: string; issuer?: string }
+    ): Promise<PoolMetrics | null> {
         try {
-            const ammInfo = await getAMMInfo(client, tokenInfo);
+            const ammInfo = await getAMMInfoForPair(client, asset1, asset2);
             if (!ammInfo) return null;
 
-            // Parse pool reserves - handle both XRP (number) and tokens (object)
             const isAsset1XRP = typeof ammInfo.amount === 'string' || typeof ammInfo.amount === 'number';
             const isAsset2XRP = typeof ammInfo.amount2 === 'string' || typeof ammInfo.amount2 === 'number';
 
-            const asset1Reserve = isAsset1XRP 
-                ? parseFloat(ammInfo.amount.toString()) / 1000000 
+            const asset1Reserve = isAsset1XRP
+                ? parseFloat(ammInfo.amount.toString()) / 1000000
                 : parseFloat((ammInfo.amount as any).value);
-
-            const asset2Reserve = isAsset2XRP 
-                ? parseFloat(ammInfo.amount2.toString()) / 1000000 
+            const asset2Reserve = isAsset2XRP
+                ? parseFloat(ammInfo.amount2.toString()) / 1000000
                 : parseFloat((ammInfo.amount2 as any).value);
 
-            // Calculate trading fee (from AMM or default 0.1%)
-            const tradingFee = ammInfo.trading_fee ? parseFloat(ammInfo.trading_fee) : 10; // 10bp = 0.1%
+            const tradingFee = ammInfo.trading_fee ? parseFloat(ammInfo.trading_fee) : 10;
 
-            // Calculate TVL (in XRP equivalent)
             let tvl: number;
-            if (isAsset1XRP) {
-                tvl = asset1Reserve * 2; // Assuming balanced pool
-            } else if (isAsset2XRP) {
-                tvl = asset2Reserve * 2;
+            let priceImpact: number;
+            let liquidityDepth: number;
+            if (isAsset1XRP || isAsset2XRP) {
+                const xrpReserve = isAsset1XRP ? asset1Reserve : asset2Reserve;
+                const tokenReserve = isAsset1XRP ? asset2Reserve : asset1Reserve;
+                tvl = (isAsset1XRP ? asset1Reserve : asset2Reserve) * 2;
+                priceImpact = this.calculatePriceImpact(1, xrpReserve, tokenReserve);
+                liquidityDepth = this.calculateLiquidityDepth(xrpReserve, tokenReserve, 0.01);
             } else {
-                // For token-token pools, estimate based on typical XRP price
-                tvl = 0; // Would need price oracle
+                tvl = 0;
+                priceImpact = 0;
+                liquidityDepth = Math.min(asset1Reserve, asset2Reserve) * 0.01;
             }
-
-            // Calculate price impact for 1 XRP trade
-            const xrpReserve = isAsset1XRP ? asset1Reserve : asset2Reserve;
-            const tokenReserve = isAsset1XRP ? asset2Reserve : asset1Reserve;
-            const priceImpact = this.calculatePriceImpact(1, xrpReserve, tokenReserve);
-
-            // Calculate liquidity depth (XRP amount for 1% slippage)
-            const liquidityDepth = this.calculateLiquidityDepth(xrpReserve, tokenReserve, 0.01);
 
             const metrics: PoolMetrics = {
                 ammId: ammInfo.amm_id || '',
-                asset1: isAsset1XRP 
+                asset1: isAsset1XRP
                     ? { currency: 'XRP' }
-                    : { 
-                        currency: (ammInfo.amount as any).currency, 
-                        issuer: (ammInfo.amount as any).issuer 
-                    },
-                asset2: isAsset2XRP 
+                    : { currency: (ammInfo.amount as any).currency, issuer: (ammInfo.amount as any).issuer },
+                asset2: isAsset2XRP
                     ? { currency: 'XRP' }
-                    : { 
-                        currency: (ammInfo.amount2 as any).currency, 
-                        issuer: (ammInfo.amount2 as any).issuer 
-                    },
+                    : { currency: (ammInfo.amount2 as any).currency, issuer: (ammInfo.amount2 as any).issuer },
                 asset1Reserve,
                 asset2Reserve,
                 lpTokens: ammInfo.lp_token ? parseFloat((ammInfo.lp_token as any).value) : 0,
@@ -103,40 +106,40 @@ export class AMMPoolAnalyzer {
                 lastUpdate: new Date()
             };
 
-            // Cache the metrics
             this.poolCache.set(ammInfo.amm_id || '', metrics);
-
             return metrics;
         } catch (error) {
-            console.error('Error analyzing pool:', error);
             return null;
         }
     }
 
     /**
-     * Find all profitable AMM pools
+     * Find all profitable AMM pools (and token-token pools for arbitrage)
      */
     async findProfitablePools(
         client: Client,
-        minTVL: number = 100, // Minimum 100 XRP TVL
+        minTVL: number = 100, // Minimum XRP TVL for XRP/token pools
         maxPriceImpact: number = 0.05, // Max 5% price impact for 1 XRP
-        useDynamicDiscovery: boolean = false // Use dynamic pool discovery
+        useDynamicDiscovery: boolean = false
     ): Promise<PoolMetrics[]> {
         try {
-            // Get all AMMs from ledger
-            const amms = await this.getAllAMMs(client, useDynamicDiscovery);
+            const pairs = await this.getAllAMMPairs(client, useDynamicDiscovery);
             const profitablePools: PoolMetrics[] = [];
 
-            for (const amm of amms) {
-                const metrics = await this.analyzePool(client, amm);
-                if (metrics && metrics.tvl >= minTVL && metrics.priceImpact <= maxPriceImpact) {
-                    // Calculate estimated APR based on trading fee and volume
+            for (const pair of pairs) {
+                const metrics = await this.analyzePoolByAssets(client, pair.asset1, pair.asset2);
+                if (!metrics) continue;
+
+                const isTokenToken = metrics.asset1.currency !== 'XRP' && metrics.asset2.currency !== 'XRP';
+                const meetsTVL = metrics.tvl >= minTVL || (isTokenToken && metrics.asset1Reserve > 0 && metrics.asset2Reserve > 0);
+                const meetsImpact = metrics.priceImpact <= maxPriceImpact || isTokenToken;
+
+                if (meetsTVL && meetsImpact) {
                     metrics.apr = this.estimateAPR(metrics);
                     profitablePools.push(metrics);
                 }
             }
 
-            // Sort by APR descending
             return profitablePools.sort((a, b) => (b.apr || 0) - (a.apr || 0));
         } catch (error) {
             console.error('Error finding profitable pools:', error);
@@ -154,7 +157,7 @@ export class AMMPoolAnalyzer {
         useDynamicDiscovery: boolean = false // Use dynamic pool discovery
     ): Promise<ArbitrageOpportunity[]> {
         try {
-            const pools = await this.findProfitablePools(client, 50, 0.05, useDynamicDiscovery); // Lower TVL for more options
+            const pools = await this.findProfitablePools(client, 10, 0.05, useDynamicDiscovery); // Lower TVL (10 XRP) for more pools + token-token
             const opportunities: ArbitrageOpportunity[] = [];
             
             let totalComparisons = 0;
@@ -336,27 +339,20 @@ export class AMMPoolAnalyzer {
     }
 
     /**
-     * Get all AMMs from ledger
+     * Get all AMM pool pairs (from ledger when dynamic, else known XRP/token pairs)
      */
-    private async getAllAMMs(client: Client, useDynamicDiscovery: boolean = false): Promise<Array<{ currency: string; issuer: string }>> {
-        const { KNOWN_TOKENS, discoverAMMPools } = await import('./poolScanner');
-        
+    private async getAllAMMPairs(client: Client, useDynamicDiscovery: boolean = false): Promise<PoolPair[]> {
+        const { KNOWN_TOKENS, discoverAMMPoolsFromLedger } = await import('./poolScanner');
+
         if (useDynamicDiscovery) {
-            // Use dynamic discovery to find active pools
-            const discoveredTokens = await discoverAMMPools(client);
-            
-            // Merge with known tokens (avoiding duplicates)
-            const tokenSet = new Set(KNOWN_TOKENS.map(t => `${t.currency}:${t.issuer}`));
-            const newTokens = discoveredTokens.filter(t => !tokenSet.has(`${t.currency}:${t.issuer}`));
-            
-            const allTokens = [...KNOWN_TOKENS, ...newTokens];
-            console.log(`   📊 Using ${allTokens.length} tokens (${KNOWN_TOKENS.length} known + ${newTokens.length} discovered)`);
-            
-            return allTokens.map(t => ({ currency: t.currency, issuer: t.issuer }));
-        } else {
-            // Use only known tokens
-            return KNOWN_TOKENS.map(t => ({ currency: t.currency, issuer: t.issuer }));
+            const pairs = await discoverAMMPoolsFromLedger(client);
+            console.log(`   📊 Using ${pairs.length} pools from ledger`);
+            return pairs;
         }
+        return KNOWN_TOKENS.map(t => ({
+            asset1: { currency: 'XRP' },
+            asset2: { currency: t.currency, issuer: t.issuer }
+        }));
     }
 
     /**

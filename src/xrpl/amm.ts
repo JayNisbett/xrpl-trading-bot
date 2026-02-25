@@ -325,15 +325,31 @@ export async function executeAMMSell(
     }
 }
 
+/** Asset for AMM (XRP or issued token) */
+export type AMMAsset = { currency: string; issuer?: string };
+
 /**
- * Get AMM pool information
+ * Get AMM pool information for XRP/token pair (convenience)
  */
 export async function getAMMInfo(client: Client, tokenInfo: TokenInfo): Promise<any | null> {
+    return getAMMInfoForPair(client, { currency: 'XRP' }, { currency: tokenInfo.currency, issuer: tokenInfo.issuer });
+}
+
+/**
+ * Get AMM pool information for any asset pair (XRP/token or token/token)
+ */
+export async function getAMMInfoForPair(
+    client: Client,
+    asset1: AMMAsset,
+    asset2: AMMAsset
+): Promise<any | null> {
     try {
+        const a1: { currency: string; issuer?: string } = asset1.currency === 'XRP' ? { currency: 'XRP' } : { currency: asset1.currency, issuer: asset1.issuer! };
+        const a2: { currency: string; issuer?: string } = asset2.currency === 'XRP' ? { currency: 'XRP' } : { currency: asset2.currency, issuer: asset2.issuer! };
         const ammInfo = await client.request({
             command: 'amm_info',
-            asset: { currency: 'XRP' },
-            asset2: { currency: tokenInfo.currency, issuer: tokenInfo.issuer }
+            asset: a1 as any,
+            asset2: a2 as any
         });
 
         if (!ammInfo.result || !(ammInfo.result as any).amm) {

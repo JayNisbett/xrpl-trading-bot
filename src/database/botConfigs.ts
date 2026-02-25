@@ -298,10 +298,10 @@ export function createConfigFromEnv(envConfig: any): BotConfiguration {
         updatedAt: new Date(),
         mode: 'hybrid',
         sniper: {
-            enabled: envConfig.sniperUser?.buyMode ?? false,
+            enabled: envConfig.sniperUser?.buyMode ?? true,
             checkInterval: envConfig.sniper?.checkInterval ?? 8000,
             maxTokensPerScan: envConfig.sniper?.maxTokensPerScan ?? 15,
-            buyMode: envConfig.sniperUser?.buyMode ?? false,
+            buyMode: envConfig.sniperUser?.buyMode ?? true,
             snipeAmount: envConfig.sniperUser?.snipeAmount ?? '1',
             customSnipeAmount: envConfig.sniperUser?.customSnipeAmount ?? '',
             minimumPoolLiquidity: envConfig.sniperUser?.minimumPoolLiquidity ?? 100,
@@ -358,6 +358,129 @@ export function getOrCreateDefaultConfig(envConfig: any, mode?: CliMode): BotCon
     return withMode;
 }
 
+export function ensureOptimizedPresetConfigs(): void {
+    const now = new Date();
+    const presets: BotConfiguration[] = [
+        {
+            ...createDefaultConfig('Sniper - Balanced Fast'),
+            id: 'preset_sniper_balanced',
+            description: 'Balanced sniper preset for higher frequency without over-aggressive risk.',
+            enabled: false,
+            mode: 'sniper',
+            createdAt: now,
+            updatedAt: now,
+            sniper: {
+                enabled: true,
+                checkInterval: 3500,
+                maxTokensPerScan: 25,
+                buyMode: true,
+                snipeAmount: '1',
+                customSnipeAmount: '',
+                minimumPoolLiquidity: 50,
+                riskScore: 'medium',
+                transactionDivides: 1
+            },
+            trading: {
+                minLiquidity: 50,
+                minHolders: 5,
+                minTradingActivity: 3,
+                maxSnipeAmount: 2,
+                emergencyStopLoss: 0.4,
+                defaultSlippage: 4
+            }
+        },
+        {
+            ...createDefaultConfig('AMM - Arbitrage Active'),
+            id: 'preset_amm_arb_active',
+            description: 'Active AMM arbitrage preset with dynamic discovery and tight polling.',
+            enabled: false,
+            mode: 'amm',
+            createdAt: now,
+            updatedAt: now,
+            amm: {
+                enabled: true,
+                arbitrage: {
+                    enabled: true,
+                    minProfitPercent: 0.4,
+                    maxTradeAmount: 3,
+                    checkInterval: 3000
+                },
+                liquidity: {
+                    enabled: false,
+                    strategy: 'balanced',
+                    minTVL: 100,
+                    maxPriceImpact: 0.05,
+                    targetAPR: 20,
+                    maxPositions: 4
+                },
+                risk: {
+                    maxImpermanentLoss: 8,
+                    maxPositionSize: 2.5,
+                    diversification: true
+                }
+            }
+        },
+        {
+            ...createDefaultConfig('Hybrid - Conservative Compounder'),
+            id: 'preset_hybrid_conservative',
+            description: 'Low-risk hybrid preset focused on consistency and capital protection.',
+            enabled: false,
+            mode: 'hybrid',
+            createdAt: now,
+            updatedAt: now,
+            sniper: {
+                enabled: true,
+                checkInterval: 6000,
+                maxTokensPerScan: 15,
+                buyMode: true,
+                snipeAmount: '0.5',
+                customSnipeAmount: '',
+                minimumPoolLiquidity: 100,
+                riskScore: 'low',
+                transactionDivides: 2
+            },
+            copyTrading: {
+                enabled: false,
+                checkInterval: 3000,
+                maxTransactionsToCheck: 20,
+                traderAddresses: [],
+                tradingAmountMode: 'percentage',
+                matchTraderPercentage: 30,
+                maxSpendPerTrade: 1,
+                fixedAmount: 0.5
+            },
+            amm: {
+                enabled: true,
+                arbitrage: {
+                    enabled: true,
+                    minProfitPercent: 0.6,
+                    maxTradeAmount: 2,
+                    checkInterval: 5000
+                },
+                liquidity: {
+                    enabled: true,
+                    strategy: 'one-sided',
+                    minTVL: 200,
+                    maxPriceImpact: 0.03,
+                    targetAPR: 15,
+                    maxPositions: 3
+                },
+                risk: {
+                    maxImpermanentLoss: 6,
+                    maxPositionSize: 1.5,
+                    diversification: true
+                }
+            }
+        }
+    ];
+
+    for (const preset of presets) {
+        if (!configs.has(preset.id)) {
+            configs.set(preset.id, preset);
+            saveConfig(preset);
+        }
+    }
+}
 function applyModeToConfig(c: BotConfiguration, mode: CliMode): BotConfiguration {
     const configMode: BotConfiguration['mode'] = mode === 'both' ? 'hybrid' : mode;
     return {

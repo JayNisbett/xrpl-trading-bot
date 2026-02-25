@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { formatDistanceToNow } from 'date-fns'
 import toast from 'react-hot-toast'
+import { apiFetch } from '../lib/api'
 
 export interface Position {
   symbol: string
@@ -210,7 +211,7 @@ export default function PositionsList({ positions, onPositionSold }: PositionsLi
                   onClick={async () => {
                     setSelling(true)
                     try {
-                      const response = await fetch('http://localhost:3000/api/positions/sell', {
+                      const response = await apiFetch('/api/positions/sell', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({

@@ -11,8 +11,9 @@ export default function Sidebar() {
     { path: '/', icon: '📊', label: 'Overview' },
     { path: '/positions', icon: '💼', label: 'Positions' },
     { path: '/amm', icon: '🌊', label: 'AMM Pools' },
-    { path: '/configs', icon: '⚙️', label: 'Configurations' },
-    { path: '/bots', icon: '🤖', label: 'Bots' },
+    { path: '/configs', icon: '⚙️', label: 'Strategy Configs' },
+    { path: '/llm', icon: '🧠', label: 'LLM Agents' },
+    { path: '/bots', icon: '🤖', label: 'Running Instances' },
     { path: '/transactions', icon: '📜', label: 'Transactions' },
     { path: '/wallets', icon: '👛', label: 'Wallets' },
     { path: '/settings', icon: '🔧', label: 'Settings' }

@@ -1,5 +1,6 @@
 import { getClient } from '../xrpl/client';
-import { getWallet, getBalance, getTokenBalances } from '../xrpl/wallet';
+import { getBalance, getTokenBalances } from '../xrpl/wallet';
+import { getWalletForUser } from '../xrpl/walletProvider';
 import { executeBuy } from '../xrpl/amm';
 import { IUser } from '../database/models';
 import { User, UserModel } from '../database/user';
@@ -13,9 +14,12 @@ import { getPositionSummary, logPositionSummary, getBotPerformanceMetrics } from
 import TradeLogger from '../utils/tradeLogger';
 import { broadcastUpdate } from '../api/server';
 import type { BotConfiguration } from '../database/botConfigs';
+import { canExecuteXrpTrade, recordExecutedTrade } from '../llmCapital/guards';
+import { llmAllowsTrade } from '../llmCapital/llmDecision';
 
 /** Per-user sniper intervals so multiple users can run sniper independently. */
 const sniperIntervals = new Map<string, NodeJS.Timeout>();
+const sniperMonitorLocks = new Set<string>();
 
 /** Per-bot config overlay (when started by botManager). Keyed by userId. */
 const sniperOverlay = new Map<string, Pick<BotConfiguration, 'sniper' | 'trading'>>();
@@ -85,6 +89,7 @@ function clearSniperIntervalForUser(userId: string): void {
         clearInterval(id);
         sniperIntervals.delete(userId);
     }
+    sniperMonitorLocks.delete(userId);
 }
 
 export async function startSniper(userId: string, options?: StartSniperOptions): Promise<Result> {
@@ -130,7 +135,7 @@ export async function startSniper(userId: string, options?: StartSniperOptions):
         }
 
         const client = await getClient();
-        const wallet = getWallet();
+        const wallet = getWalletForUser(userId);
         const xrpBalance = await getBalance(client, wallet.address);
         const tokenBalances = await getTokenBalances(client, wallet.address);
 
@@ -182,6 +187,9 @@ export async function startSniper(userId: string, options?: StartSniperOptions):
 
         const logger = TradeLogger.getInstance();
         const id = setInterval(async () => {
+            if (sniperMonitorLocks.has(userId)) {
+                return;
+            }
             await monitorTokenMarkets(userId);
             if (Math.random() < 0.02) {
                 logger.displayStats();
@@ -216,6 +224,11 @@ export async function stopSniper(userId: string): Promise<Result> {
 }
 
 async function monitorTokenMarkets(userId: string): Promise<void> {
+    if (sniperMonitorLocks.has(userId)) {
+        return;
+    }
+
+    sniperMonitorLocks.add(userId);
     try {
         const user = await User.findOne({ userId });
         if (!user || !user.sniperActive) {
@@ -232,13 +245,13 @@ async function monitorTokenMarkets(userId: string): Promise<void> {
         const newTokens = await detectNewTokensFromAMM(client);
 
         const effective = getEffectiveSniperConfig(userId);
-        const evaluationPromises = newTokens
-            .slice(0, effective.maxTokensPerScan)
-            .map(tokenInfo => evaluateAndSnipeToken(client, user, tokenInfo, effective));
-        
-        await Promise.all(evaluationPromises);
+        for (const tokenInfo of newTokens.slice(0, effective.maxTokensPerScan)) {
+            await evaluateAndSnipeToken(client, user, tokenInfo, effective, userId);
+        }
     } catch (error) {
         console.error('Monitor error:', error instanceof Error ? error.message : 'Unknown error');
+    } finally {
+        sniperMonitorLocks.delete(userId);
     }
 }
 
@@ -246,7 +259,8 @@ async function evaluateAndSnipeToken(
     client: any,
     user: IUser,
     tokenInfo: TokenInfo,
-    effective: EffectiveSniperConfig
+    effective: EffectiveSniperConfig,
+    userId: string
 ): Promise<void> {
     try {
         const evaluation = await evaluateToken(client, user, tokenInfo, effective);
@@ -255,7 +269,7 @@ async function evaluateAndSnipeToken(
             return;
         }
 
-        await executeSnipe(client, user, tokenInfo, effective);
+        await executeSnipe(client, user, tokenInfo, effective, userId);
     } catch (error) {
         console.error(`Error evaluating token:`, error instanceof Error ? error.message : 'Unknown error');
     }
@@ -265,10 +279,11 @@ async function executeSnipe(
     client: any,
     user: IUser,
     tokenInfo: TokenInfo,
-    effective: EffectiveSniperConfig
+    effective: EffectiveSniperConfig,
+    userId: string
 ): Promise<void> {
     try {
-        const wallet = getWallet();
+        const wallet = getWalletForUser(userId);
         let snipeAmount: number;
         if (effective.snipeAmount === 'custom') {
             if (!effective.customSnipeAmount || isNaN(parseFloat(effective.customSnipeAmount))) {
@@ -310,6 +325,18 @@ async function executeSnipe(
             return;
         }
 
+        const llmGuard = canExecuteXrpTrade(userId, 'sniper', snipeAmount);
+        if (!llmGuard.allowed) {
+            console.error(`❌ LLM policy blocked sniper trade: ${llmGuard.reason}`);
+            return;
+        }
+
+        const llmOk = await llmAllowsTrade(userId, 'sniper', snipeAmount, { token: tokenInfo.currency });
+        if (!llmOk.allowed) {
+            console.error(`❌ LLM service declined sniper trade: ${llmOk.reason}`);
+            return;
+        }
+
         const buyResult = await executeBuy(
             client,
             wallet,
@@ -319,6 +346,7 @@ async function executeSnipe(
         );
 
         if (buyResult.success && buyResult.txHash) {
+            recordExecutedTrade(userId, 'sniper', snipeAmount);
             // Log successful snipe
             const logger = TradeLogger.getInstance();
             logger.recordSuccessfulSnipe(

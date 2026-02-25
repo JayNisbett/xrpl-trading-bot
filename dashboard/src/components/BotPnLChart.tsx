@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Area, AreaChart } from 'recharts'
+import { apiFetch } from '../lib/api'
 
 interface PnLDataPoint {
   timestamp: string
@@ -30,7 +31,7 @@ export default function BotPnLChart({ botId, botName }: BotPnLChartProps) {
 
   const fetchBotPnL = async () => {
     try {
-      const response = await fetch(`http://localhost:3000/api/bot/${botId}/pnl`)
+      const response = await apiFetch(`/api/bot/${botId}/pnl`)
       if (response.ok) {
         const result = await response.json()
         setData(result.data || [])

@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import toast from 'react-hot-toast'
 import { Socket } from 'socket.io-client'
+import { API_BASE } from '../lib/api'
 
 interface BotConfiguration {
   id: string
@@ -81,6 +82,12 @@ interface BotInstance {
   }
 }
 
+interface LLMAgentLite {
+  id: string
+  name: string
+  userId: string
+}
+
 interface BotConfigsProps {
   socket: Socket | null
 }
@@ -89,6 +96,7 @@ export default function BotConfigs({ socket }: BotConfigsProps) {
   const navigate = useNavigate()
   const [configs, setConfigs] = useState<BotConfiguration[]>([])
   const [instances, setInstances] = useState<BotInstance[]>([])
+  const [llmAgents, setLlmAgents] = useState<LLMAgentLite[]>([])
   const [loading, setLoading] = useState(true)
   const [editingConfig, setEditingConfig] = useState<BotConfiguration | null>(null)
   const [isCreating, setIsCreating] = useState(false)
@@ -103,9 +111,10 @@ export default function BotConfigs({ socket }: BotConfigsProps) {
 
   const fetchData = async () => {
     try {
-      const [configsRes, instancesRes] = await Promise.all([
-        fetch('http://localhost:3000/api/configs'),
-        fetch('http://localhost:3000/api/instances')
+      const [configsRes, instancesRes, agentsRes] = await Promise.all([
+        fetch(`${API_BASE}/api/configs`),
+        fetch(`${API_BASE}/api/instances`),
+        fetch(`${API_BASE}/api/llm-agents`)
       ])
 
       if (configsRes.ok) {
@@ -119,6 +128,11 @@ export default function BotConfigs({ socket }: BotConfigsProps) {
         console.log('📥 Frontend: Fetched instances:', instancesData.length, instancesData)
         setInstances(instancesData)
       }
+
+      if (agentsRes.ok) {
+        const agentsData = await agentsRes.json()
+        setLlmAgents((agentsData?.agents || []).map((a: any) => ({ id: a.id, name: a.name, userId: a.userId })))
+      }
       
       setLoading(false)
     } catch (error) {
@@ -129,7 +143,7 @@ export default function BotConfigs({ socket }: BotConfigsProps) {
 
   const importFromEnv = async () => {
     try {
-      const response = await fetch('http://localhost:3000/api/configs/from-env', {
+      const response = await fetch(`${API_BASE}/api/configs/from-env`, {
         method: 'POST'
       })
 
@@ -211,8 +225,8 @@ export default function BotConfigs({ socket }: BotConfigsProps) {
     try {
       const method = isCreating ? 'POST' : 'PUT'
       const url = isCreating 
-        ? 'http://localhost:3000/api/configs'
-        : `http://localhost:3000/api/configs/${config.id}`
+        ? `${API_BASE}/api/configs`
+        : `${API_BASE}/api/configs/${config.id}`
 
       const response = await fetch(url, {
         method,
@@ -237,7 +251,7 @@ export default function BotConfigs({ socket }: BotConfigsProps) {
     if (!confirm('Delete this configuration? This cannot be undone.')) return
 
     try {
-      const response = await fetch(`http://localhost:3000/api/configs/${configId}`, {
+      const response = await fetch(`${API_BASE}/api/configs/${configId}`, {
         method: 'DELETE'
       })
 
@@ -258,7 +272,7 @@ export default function BotConfigs({ socket }: BotConfigsProps) {
     const toastId = toast.loading(`Starting ${config?.name || 'bot'}...`)
     
     try {
-      const response = await fetch('http://localhost:3000/api/instances/start', {
+      const response = await fetch(`${API_BASE}/api/instances/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ configId })
@@ -285,7 +299,7 @@ export default function BotConfigs({ socket }: BotConfigsProps) {
 
   const stopBot = async (instanceId: string) => {
     try {
-      const response = await fetch(`http://localhost:3000/api/instances/${instanceId}/stop`, {
+      const response = await fetch(`${API_BASE}/api/instances/${instanceId}/stop`, {
         method: 'POST'
       })
 
@@ -302,7 +316,7 @@ export default function BotConfigs({ socket }: BotConfigsProps) {
 
   const restartBot = async (instanceId: string) => {
     try {
-      const response = await fetch(`http://localhost:3000/api/instances/${instanceId}/restart`, {
+      const response = await fetch(`${API_BASE}/api/instances/${instanceId}/restart`, {
         method: 'POST'
       })
 
@@ -329,6 +343,7 @@ export default function BotConfigs({ socket }: BotConfigsProps) {
   }
 
   const runningCount = instances.filter(i => i.status === 'running').length
+  const agentByUserId = new Map(llmAgents.map(a => [a.userId, a]))
 
   return (
     <div className="page">
@@ -349,6 +364,13 @@ export default function BotConfigs({ socket }: BotConfigsProps) {
             + New Configuration
           </button>
         </div>
+      </div>
+
+      <div className="info-banner-small" style={{ marginBottom: '1rem' }}>
+        <span className="info-icon">🧭</span>
+        <span className="info-text">
+          Control model: <strong>LLM Agent</strong> (capital + risk policy) → <strong>Strategy Config</strong> (execution settings) → <strong>Running Instance</strong> (live process placing trades).
+        </span>
       </div>
 
       {showDebug && (
@@ -589,6 +611,12 @@ export default function BotConfigs({ socket }: BotConfigsProps) {
                       <div className="info-row">
                         <span className="info-label">Mode:</span>
                         <span className="info-value">{instance.mode}</span>
+                      </div>
+                      <div className="info-row">
+                        <span className="info-label">Owner:</span>
+                        <span className="info-value">
+                          {agentByUserId.get(instance.userId)?.name || instance.userId}
+                        </span>
                       </div>
                       {instance.startedAt && (
                         <div className="info-row">

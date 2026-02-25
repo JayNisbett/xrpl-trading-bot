@@ -4,13 +4,29 @@ import { Server } from 'socket.io';
 import cors from 'cors';
 import { User, UserModel } from '../database/user';
 import { getClient } from '../xrpl/client';
-import { getWallet, getBalance, getTokenBalances } from '../xrpl/wallet';
+import { getBalance, getTokenBalances } from '../xrpl/wallet';
+import { Wallet } from 'xrpl';
+import { getWalletForUser, getWalletAddressForUser, setWalletSeedForUser, generateNewWallet, listWalletOptions, getSeedForAddress } from '../xrpl/walletProvider';
 import { getPositionSummary, getBotPerformanceMetrics } from '../utils/positionTracker';
 import { getAccountStatus } from '../utils/safetyChecks';
 import { getLedgerTransactions } from '../utils/ledgerTransactions';
 import * as BotConfigs from '../database/botConfigs';
+import type { BotConfiguration } from '../database/botConfigs';
+import { loadSettings, saveSettings, AppSettings } from '../database/settingsStore';
+
+function getEnabledStrategiesForConfig(config: BotConfiguration): Array<'sniper' | 'copyTrading' | 'amm'> {
+    const out: Array<'sniper' | 'copyTrading' | 'amm'> = [];
+    if (config.sniper.enabled && (config.mode === 'sniper' || config.mode === 'hybrid')) out.push('sniper');
+    if (config.copyTrading.enabled && (config.mode === 'copyTrading' || config.mode === 'hybrid')) out.push('copyTrading');
+    if (config.amm.enabled && (config.mode === 'amm' || config.mode === 'hybrid')) out.push('amm');
+    return out;
+}
 import { botManager } from '../botManager';
 import { logger } from '../utils/logger';
+import { startSniper, stopSniper, isRunningSniper } from '../sniper';
+import { startCopyTrading, stopCopyTrading, isRunningCopyTrading } from '../copyTrading';
+import { llmCapitalManager } from '../llmCapital/manager';
+import { XRPLMCPClient } from '../mcp/xrplMcpClient';
 
 const app = express();
 const httpServer = createServer(app);
@@ -26,6 +42,7 @@ app.use(express.json());
 
 let userId = 'default';
 let ammBotInstance: any = null; // Will be set by main bot
+const mcpClient = new XRPLMCPClient();
 
 // REST API Endpoints
 app.get('/api/status', async (_req, res) => {
@@ -36,7 +53,7 @@ app.get('/api/status', async (_req, res) => {
         }
 
         const client = await getClient();
-        const wallet = getWallet();
+        const wallet = getWalletForUser(userId);
         const xrpBalance = await getBalance(client, wallet.address);
         const tokenBalances = await getTokenBalances(client, wallet.address);
         const accountStatus = await getAccountStatus(client, wallet.address);
@@ -57,7 +74,7 @@ app.get('/api/status', async (_req, res) => {
 app.get('/api/positions', async (_req, res) => {
     try {
         const client = await getClient();
-        const wallet = getWallet();
+        const wallet = getWalletForUser(userId);
         const positions = await getPositionSummary(client, wallet.address, userId);
         return res.json(positions);
     } catch (error) {
@@ -93,7 +110,7 @@ app.get('/api/transactions', async (req, res) => {
         }
 
         const client = await getClient();
-        const wallet = getWallet();
+        const wallet = getWalletForUser(userId);
         const ledgerTxs = await getLedgerTransactions(client, wallet.address, 150);
 
         const seenHashes = new Set<string>();
@@ -161,22 +178,35 @@ app.get('/api/history', async (_req, res) => {
 
 app.post('/api/controls/sniper', async (req, res) => {
     try {
-        const { action } = req.body;
+        const { action } = req.body as { action: 'start' | 'stop' };
         const user = await User.findOne({ userId });
         if (!user) {
             return res.status(404).json({ error: 'User not found' });
         }
 
-        user.sniperActive = action === 'start';
-        const userModel = new UserModel(user);
-        await userModel.save();
+        if (action === 'start') {
+            const result = await startSniper(userId);
+            if (!result.success) {
+                return res.status(400).json({ error: result.error || 'Failed to start sniper' });
+            }
+        } else if (action === 'stop') {
+            const result = await stopSniper(userId);
+            if (!result.success) {
+                return res.status(400).json({ error: result.error || 'Failed to stop sniper' });
+            }
+        } else {
+            return res.status(400).json({ error: 'Invalid action. Use start|stop' });
+        }
 
-        broadcastUpdate('status', { 
-            sniperActive: user.sniperActive,
+        const updated = await User.findOne({ userId });
+        const sniperActive = !!updated?.sniperActive && isRunningSniper();
+
+        broadcastUpdate('status', {
+            sniperActive,
             message: `Sniper ${action}ed`
         });
 
-        return res.json({ sniperActive: user.sniperActive });
+        return res.json({ sniperActive });
     } catch (error) {
         return res.status(500).json({ error: 'Failed to toggle sniper' });
     }
@@ -184,22 +214,35 @@ app.post('/api/controls/sniper', async (req, res) => {
 
 app.post('/api/controls/copytrading', async (req, res) => {
     try {
-        const { action } = req.body;
+        const { action } = req.body as { action: 'start' | 'stop' };
         const user = await User.findOne({ userId });
         if (!user) {
             return res.status(404).json({ error: 'User not found' });
         }
 
-        user.copyTraderActive = action === 'start';
-        const userModel = new UserModel(user);
-        await userModel.save();
+        if (action === 'start') {
+            const result = await startCopyTrading(userId);
+            if (!result.success) {
+                return res.status(400).json({ error: result.error || 'Failed to start copy trading' });
+            }
+        } else if (action === 'stop') {
+            const result = await stopCopyTrading(userId);
+            if (!result.success) {
+                return res.status(400).json({ error: result.error || 'Failed to stop copy trading' });
+            }
+        } else {
+            return res.status(400).json({ error: 'Invalid action. Use start|stop' });
+        }
 
-        broadcastUpdate('status', { 
-            copyTradingActive: user.copyTraderActive,
+        const updated = await User.findOne({ userId });
+        const copyTradingActive = !!updated?.copyTraderActive && isRunningCopyTrading();
+
+        broadcastUpdate('status', {
+            copyTradingActive,
             message: `Copy trading ${action}ed`
         });
 
-        return res.json({ copyTradingActive: user.copyTraderActive });
+        return res.json({ copyTradingActive });
     } catch (error) {
         return res.status(500).json({ error: 'Failed to toggle copy trading' });
     }
@@ -245,7 +288,7 @@ export function startAPIServer(port: number = 3000, userIdParam: string = 'defau
     const updateDashboard = async () => {
         try {
             const client = await getClient();
-            const wallet = getWallet();
+            const wallet = getWalletForUser(userId);
             const positions = await getPositionSummary(client, wallet.address, userId);
             const metrics = await getBotPerformanceMetrics(userId);
             const accountStatus = await getAccountStatus(client, wallet.address);
@@ -291,7 +334,7 @@ app.get('/api/bots', async (_req, res) => {
         }
 
         const client = await getClient();
-        const wallet = getWallet();
+        const wallet = getWalletForUser(userId);
         const xrpBalance = await getBalance(client, wallet.address);
         const positions = await getPositionSummary(client, wallet.address, userId);
         const metrics = await getBotPerformanceMetrics(userId);
@@ -350,6 +393,121 @@ app.delete('/api/bots/:botId', async (_req, res) => {
 });
 
 // Wallet Management Endpoints
+app.post('/api/wallets/generate', (_req, res) => {
+    try {
+        const wallet = generateNewWallet();
+        return res.json({
+            address: wallet.address,
+            publicKey: wallet.publicKey,
+            seed: wallet.seed,
+            warning: 'Store this seed securely. It is returned only once. Do not share or log it.'
+        });
+    } catch (error: any) {
+        return res.status(500).json({ error: 'Failed to generate wallet', message: error?.message });
+    }
+});
+
+app.get('/api/wallets/list', (_req, res) => {
+    try {
+        const options = listWalletOptions();
+        return res.json({ wallets: options });
+    } catch (error: any) {
+        return res.status(500).json({ error: 'Failed to list wallets', message: error?.message });
+    }
+});
+
+/**
+ * List all wallets known to the platform (seed store + default) with balance and linked agent (if any).
+ * Used by the Wallets page so agent-created wallets appear.
+ */
+app.get('/api/wallets', async (_req, res) => {
+    try {
+        const options = listWalletOptions();
+        const client = await getClient();
+        const agents = llmCapitalManager.listAgents();
+        const walletsWithBalance = await Promise.all(
+            options.map(async (opt) => {
+                let balance = 0;
+                try {
+                    balance = await getBalance(client, opt.walletAddress);
+                } catch {
+                    // leave 0
+                }
+                const agent = agents.find(a => a.walletAddress === opt.walletAddress);
+                return {
+                    userId: opt.userId,
+                    walletAddress: opt.walletAddress,
+                    label: opt.label,
+                    balance,
+                    agentId: agent?.id,
+                    agentName: agent?.name
+                };
+            })
+        );
+        return res.json({ wallets: walletsWithBalance });
+    } catch (error: any) {
+        return res.status(500).json({ error: 'Failed to list wallets', message: error?.message });
+    }
+});
+
+/**
+ * Fund a destination address (e.g. new agent wallet) from a master/source wallet.
+ * Only works for source wallets we have the seed for (from seed store or default config).
+ */
+app.post('/api/wallets/fund-address', async (req, res) => {
+    try {
+        const { fromWalletAddress, toAddress, amount } = req.body as { fromWalletAddress?: string; toAddress?: string; amount?: number };
+
+        if (!fromWalletAddress || !toAddress || amount == null || amount <= 0) {
+            return res.status(400).json({ error: 'Missing or invalid: fromWalletAddress, toAddress, amount (positive number)' });
+        }
+
+        const seed = getSeedForAddress(fromWalletAddress.trim());
+        if (!seed) {
+            return res.status(400).json({
+                error: 'Master wallet not found or not controlled by this platform. Use a wallet from the list (e.g. Default wallet or an existing agent wallet).'
+            });
+        }
+
+        const masterWallet = Wallet.fromSeed(seed);
+        if (masterWallet.address !== fromWalletAddress.trim()) {
+            return res.status(400).json({ error: 'Master wallet address does not match' });
+        }
+
+        const client = await getClient();
+        const drops = Math.floor(amount * 1_000_000);
+        const payment: any = {
+            TransactionType: 'Payment',
+            Account: masterWallet.address,
+            Destination: toAddress.trim(),
+            Amount: String(drops)
+        };
+
+        const response = await client.submitAndWait(payment, { wallet: masterWallet });
+        const meta = response.result.meta as any;
+
+        if (meta?.TransactionResult === 'tesSUCCESS') {
+            return res.json({
+                success: true,
+                txHash: response.result.hash,
+                from: masterWallet.address,
+                to: toAddress.trim(),
+                amount
+            });
+        } else {
+            return res.status(500).json({
+                error: 'Transfer failed',
+                result: meta?.TransactionResult
+            });
+        }
+    } catch (error: any) {
+        return res.status(500).json({
+            error: 'Failed to fund address',
+            message: error?.message || 'Unknown error'
+        });
+    }
+});
+
 app.post('/api/wallets/transfer', async (req, res) => {
     try {
         const { fromAddress, toAddress, amount } = req.body;
@@ -359,19 +517,21 @@ app.post('/api/wallets/transfer', async (req, res) => {
         }
 
         const client = await getClient();
-        const wallet = getWallet();
-
-        // Verify fromAddress matches wallet
-        if (wallet.address !== fromAddress) {
-            return res.status(403).json({ error: 'Unauthorized wallet' });
+        const trimmedFrom = String(fromAddress).trim();
+        const seed = getSeedForAddress(trimmedFrom);
+        if (!seed) {
+            return res.status(403).json({
+                error: 'From wallet is not controlled by this platform. Use a wallet from your Wallets list.'
+            });
         }
+        const wallet = Wallet.fromSeed(seed);
 
         // Prepare payment transaction
         const payment: any = {
             TransactionType: 'Payment',
-            Account: fromAddress,
-            Destination: toAddress,
-            Amount: String(Math.floor(amount * 1000000)) // Convert to drops
+            Account: wallet.address,
+            Destination: String(toAddress).trim(),
+            Amount: String(Math.floor(Number(amount) * 1000000)) // Convert to drops
         };
 
         // Submit and wait for validation
@@ -430,7 +590,7 @@ app.post('/api/positions/sell', async (req, res) => {
         }
 
         const client = await getClient();
-        const wallet = getWallet();
+        const wallet = getWalletForUser(userId);
         const { executeSell } = await import('../xrpl/amm');
         const config = await import('../config');
 
@@ -513,7 +673,7 @@ app.post('/api/offers', async (req, res) => {
             return res.status(400).json({ error: 'currency and issuer required' });
         }
         const client = await getClient();
-        const wallet = getWallet();
+        const wallet = getWalletForUser(userId);
         const { placeBuyOrder, placeSellOrder } = await import('../xrpl/offers');
         const amt = parseFloat(tokenAmount || '0');
         const price = parseFloat(limitPrice || '0');
@@ -540,7 +700,7 @@ app.delete('/api/offers/:sequence', async (req, res) => {
             return res.status(400).json({ error: 'Invalid offer sequence' });
         }
         const client = await getClient();
-        const wallet = getWallet();
+        const wallet = getWalletForUser(userId);
         const { cancelOfferBySequence } = await import('../xrpl/offers');
         const result = await cancelOfferBySequence(client, wallet, sequence);
         if (result.success) {
@@ -555,7 +715,7 @@ app.delete('/api/offers/:sequence', async (req, res) => {
 app.get('/api/offers', async (_req, res) => {
     try {
         const client = await getClient();
-        const wallet = getWallet();
+        const wallet = getWalletForUser(userId);
         const { getAccountOffers } = await import('../xrpl/offers');
         const offers = await getAccountOffers(client, wallet.address);
         return res.json(offers);
@@ -945,6 +1105,7 @@ app.post('/api/instances/start', async (req, res) => {
         const result = await botManager.startBot(config, userId);
         
         if (result.success) {
+            BotConfigs.updateConfig(configId, { enabled: true });
             console.log(`✅ API: Bot started successfully, instanceId: ${result.instanceId}`);
             return res.json({ success: true, instanceId: result.instanceId });
         } else {
@@ -959,9 +1120,13 @@ app.post('/api/instances/start', async (req, res) => {
 
 app.post('/api/instances/:id/stop', async (req, res) => {
     try {
+        const instance = botManager.getInstance(req.params.id);
         const result = await botManager.stopBot(req.params.id);
         
         if (result.success) {
+            if (instance?.configId) {
+                BotConfigs.updateConfig(instance.configId, { enabled: false });
+            }
             return res.json({ success: true });
         } else {
             return res.status(500).json({ error: result.error });
@@ -973,9 +1138,13 @@ app.post('/api/instances/:id/stop', async (req, res) => {
 
 app.post('/api/instances/:id/restart', async (req, res) => {
     try {
+        const instance = botManager.getInstance(req.params.id);
         const result = await botManager.restartBot(req.params.id);
         
         if (result.success) {
+            if (instance?.configId) {
+                BotConfigs.updateConfig(instance.configId, { enabled: true });
+            }
             return res.json({ success: true });
         } else {
             return res.status(500).json({ error: result.error });
@@ -985,38 +1154,374 @@ app.post('/api/instances/:id/restart', async (req, res) => {
     }
 });
 
+// LLM Capital Agent Management
+app.get('/api/llm-agents', async (_req, res) => {
+    try {
+        return res.json({ agents: llmCapitalManager.listAgents() });
+    } catch (error: any) {
+        return res.status(500).json({ error: 'Failed to fetch LLM agents', message: error?.message });
+    }
+});
+
+app.post('/api/llm-agents', async (req, res) => {
+    try {
+        const { name, userId: llmUserId, walletAddress, allocatedXrp, policy, parentId, defaultConfigId, prompt } = req.body;
+        if (!name || !walletAddress || !allocatedXrp || !policy) {
+            return res.status(400).json({ error: 'Missing required fields: name, walletAddress, allocatedXrp, policy' });
+        }
+
+        const agent = llmCapitalManager.createAgent({
+            name,
+            userId: llmUserId,
+            walletAddress,
+            allocatedXrp: Number(allocatedXrp),
+            policy,
+            parentId,
+            defaultConfigId: defaultConfigId || undefined,
+            prompt: prompt || undefined
+        });
+
+        return res.json({ success: true, agent });
+    } catch (error: any) {
+        return res.status(500).json({ error: 'Failed to create LLM agent', message: error?.message });
+    }
+});
+
+app.post('/api/llm-agents/:id/spawn', async (req, res) => {
+    try {
+        const { name, walletAddress, allocatedXrp, policy } = req.body;
+        if (!name || !walletAddress || !allocatedXrp) {
+            return res.status(400).json({ error: 'Missing required fields: name, walletAddress, allocatedXrp' });
+        }
+
+        const child = llmCapitalManager.spawnChildAgent(req.params.id, {
+            name,
+            walletAddress,
+            allocatedXrp: Number(allocatedXrp),
+            policy
+        });
+
+        return res.json({ success: true, agent: child });
+    } catch (error: any) {
+        return res.status(400).json({ error: 'Failed to spawn child agent', message: error?.message });
+    }
+});
+
+app.post('/api/llm-agents/:id/status', async (req, res) => {
+    try {
+        const { status } = req.body as { status: 'active' | 'paused' | 'error' };
+        if (!status || !['active', 'paused', 'error'].includes(status)) {
+            return res.status(400).json({ error: 'Invalid status. Use active|paused|error' });
+        }
+
+        const agent = llmCapitalManager.updateAgentStatus(req.params.id, status);
+        return res.json({ success: true, agent });
+    } catch (error: any) {
+        return res.status(400).json({ error: 'Failed to update agent status', message: error?.message });
+    }
+});
+
+app.patch('/api/llm-agents/:id', async (req, res) => {
+    try {
+        const { defaultConfigId, prompt } = req.body as { defaultConfigId?: string | null; prompt?: string | null };
+        const agent = llmCapitalManager.updateAgent(req.params.id, { defaultConfigId, prompt });
+        return res.json({ success: true, agent });
+    } catch (error: any) {
+        return res.status(400).json({ error: 'Failed to update agent', message: error?.message });
+    }
+});
+
+app.post('/api/llm-agents/:id/bind-existing-wallet', async (req, res) => {
+    try {
+        const { walletAddress } = req.body as { walletAddress: string };
+        if (!walletAddress || typeof walletAddress !== 'string') {
+            return res.status(400).json({ error: 'Missing required field: walletAddress' });
+        }
+
+        const agent = llmCapitalManager.getAgent(req.params.id);
+        if (!agent) {
+            return res.status(404).json({ error: 'Agent not found' });
+        }
+        if (agent.walletAddress !== walletAddress.trim()) {
+            return res.status(400).json({
+                error: 'Wallet address does not match this agent. Create the agent with this wallet address first.'
+            });
+        }
+
+        const seed = getSeedForAddress(walletAddress);
+        if (!seed) {
+            return res.status(400).json({
+                error: 'No known seed for this wallet. Use "Bind seed" with the wallet secret, or select a wallet that is already on this platform.'
+            });
+        }
+
+        setWalletSeedForUser(agent.userId, seed);
+        return res.json({ success: true, userId: agent.userId, walletAddress: agent.walletAddress });
+    } catch (error: any) {
+        return res.status(500).json({ error: 'Failed to bind existing wallet', message: error?.message });
+    }
+});
+
+app.get('/api/llm-agents/:id/instances', async (req, res) => {
+    try {
+        const agent = llmCapitalManager.getAgent(req.params.id);
+        if (!agent) {
+            return res.status(404).json({ error: 'Agent not found' });
+        }
+
+        const instances = botManager.getInstancesByUserId(agent.userId);
+        return res.json({ userId: agent.userId, instances });
+    } catch (error: any) {
+        return res.status(500).json({ error: 'Failed to fetch LLM agent instances', message: error?.message });
+    }
+});
+
+app.post('/api/llm-agents/:id/wallet-seed', async (req, res) => {
+    try {
+        const agent = llmCapitalManager.getAgent(req.params.id);
+        if (!agent) {
+            return res.status(404).json({ error: 'Agent not found' });
+        }
+
+        const { seed } = req.body as { seed: string };
+        if (!seed) {
+            return res.status(400).json({ error: 'Missing required field: seed' });
+        }
+
+        const bound = setWalletSeedForUser(agent.userId, seed);
+        if (bound.walletAddress !== agent.walletAddress) {
+            return res.status(400).json({
+                error: 'Seed wallet address does not match agent wallet address',
+                expected: agent.walletAddress,
+                got: bound.walletAddress
+            });
+        }
+
+        return res.json({ success: true, userId: agent.userId, walletAddress: bound.walletAddress });
+    } catch (error: any) {
+        return res.status(500).json({ error: 'Failed to set LLM agent wallet seed', message: error?.message });
+    }
+});
+
+app.post('/api/llm-agents/:id/start-config', async (req, res) => {
+    try {
+        let { configId } = req.body as { configId?: string };
+        const agent = llmCapitalManager.getAgent(req.params.id);
+        if (!agent) {
+            return res.status(404).json({ error: 'Agent not found' });
+        }
+        if (!configId && agent.defaultConfigId) {
+            configId = agent.defaultConfigId;
+        }
+        if (!configId) {
+            return res.status(400).json({ error: 'Missing configId. Set a default config for this agent or pass configId in the request.' });
+        }
+        if (agent.status !== 'active') {
+            return res.status(400).json({ error: `Agent must be active (current: ${agent.status})` });
+        }
+
+        const config = BotConfigs.getConfig(configId!);
+        if (!config) {
+            return res.status(404).json({ error: 'Configuration not found' });
+        }
+
+        const enabledStrategies = getEnabledStrategiesForConfig(config);
+        const notAllowed = enabledStrategies.filter(s => !agent.policy.allowedStrategies.includes(s));
+        if (notAllowed.length > 0) {
+            return res.status(400).json({
+                error: `Config enables strategies not allowed for this agent: ${notAllowed.join(', ')}. Allowed: ${agent.policy.allowedStrategies.join(', ')}.`
+            });
+        }
+
+        const runtimeWallet = getWalletAddressForUser(agent.userId);
+        if (agent.walletAddress !== runtimeWallet) {
+            return res.status(400).json({
+                error: 'Agent wallet does not match currently configured runtime wallet. Multi-seed wallet routing not yet enabled.',
+                runtimeWallet,
+                agentWallet: agent.walletAddress
+            });
+        }
+
+        const result = await botManager.startBot(config, agent.userId);
+        if (!result.success) {
+            return res.status(500).json({ error: result.error || 'Failed to start config for agent' });
+        }
+
+        BotConfigs.updateConfig(configId, { enabled: true });
+        return res.json({ success: true, instanceId: result.instanceId, userId: agent.userId });
+    } catch (error: any) {
+        return res.status(500).json({ error: 'Failed to start LLM agent config', message: error?.message });
+    }
+});
+
+app.post('/api/llm-agents/:id/stop-all', async (req, res) => {
+    try {
+        const agent = llmCapitalManager.getAgent(req.params.id);
+        if (!agent) {
+            return res.status(404).json({ error: 'Agent not found' });
+        }
+
+        const instances = botManager.getInstancesByUserId(agent.userId)
+            .filter(i => i.status === 'running');
+
+        const results = await Promise.all(instances.map(i => botManager.stopBot(i.id)));
+        const failed = results.filter(r => !r.success);
+
+        if (failed.length > 0) {
+            return res.status(500).json({ error: 'Some instances failed to stop', details: failed });
+        }
+
+        return res.json({ success: true, stopped: instances.length, userId: agent.userId });
+    } catch (error: any) {
+        return res.status(500).json({ error: 'Failed to stop LLM agent instances', message: error?.message });
+    }
+});
+
+/** Start agent: set status active and run with its default config (one-click). */
+app.post('/api/llm-agents/:id/start', async (req, res) => {
+    try {
+        const agent = llmCapitalManager.getAgent(req.params.id);
+        if (!agent) return res.status(404).json({ error: 'Agent not found' });
+
+        const configId = agent.defaultConfigId;
+        if (!configId) {
+            return res.status(400).json({ error: 'Set a config for this agent first (Config dropdown), then start the agent.' });
+        }
+
+        const config = BotConfigs.getConfig(configId);
+        if (!config) {
+            return res.status(404).json({ error: 'Configuration not found. The selected config may have been deleted.' });
+        }
+
+        const enabledStrategies = getEnabledStrategiesForConfig(config);
+        const notAllowed = enabledStrategies.filter(s => !agent.policy.allowedStrategies.includes(s));
+        if (notAllowed.length > 0) {
+            return res.status(400).json({
+                error: `Config enables strategies not allowed for this agent: ${notAllowed.join(', ')}. Allowed: ${agent.policy.allowedStrategies.join(', ')}.`
+            });
+        }
+
+        let runtimeWallet: string;
+        try {
+            runtimeWallet = getWalletAddressForUser(agent.userId);
+        } catch (walletError: any) {
+            return res.status(400).json({
+                error: walletError?.message?.includes('No wallet seed')
+                    ? 'Bind a wallet seed for this agent first (Wallet section → enter seed and click Bind Seed).'
+                    : (walletError?.message || 'Wallet not configured for this agent.')
+            });
+        }
+
+        if (agent.walletAddress !== runtimeWallet) {
+            return res.status(400).json({
+                error: 'Agent wallet address does not match the bound seed. Bind the correct wallet seed for this agent.'
+            });
+        }
+
+        llmCapitalManager.updateAgentStatus(agent.id, 'active');
+
+        const result = await botManager.startBot(config, agent.userId);
+        if (!result.success) {
+            llmCapitalManager.updateAgentStatus(agent.id, 'paused');
+            return res.status(400).json({ error: result.error || 'Failed to start agent' });
+        }
+
+        BotConfigs.updateConfig(configId, { enabled: true });
+        return res.json({ success: true, instanceId: result.instanceId, userId: agent.userId });
+    } catch (error: any) {
+        const message = error?.message || 'Failed to start agent';
+        return res.status(500).json({ error: message });
+    }
+});
+
+/** Stop agent: stop all instances and set status to paused (one-click). */
+app.post('/api/llm-agents/:id/stop', async (req, res) => {
+    try {
+        const agent = llmCapitalManager.getAgent(req.params.id);
+        if (!agent) return res.status(404).json({ error: 'Agent not found' });
+
+        const instances = botManager.getInstancesByUserId(agent.userId).filter(i => i.status === 'running');
+        const stopResults = await Promise.all(instances.map(i => botManager.stopBot(i.id)));
+        const failed = stopResults.filter(r => !r.success);
+
+        llmCapitalManager.updateAgentStatus(agent.id, 'paused');
+
+        if (failed.length > 0) {
+            return res.status(200).json({
+                success: true,
+                stopped: instances.length - failed.length,
+                userId: agent.userId,
+                warning: `${failed.length} instance(s) could not be stopped cleanly`
+            });
+        }
+        return res.json({ success: true, stopped: instances.length, userId: agent.userId });
+    } catch (error: any) {
+        const message = error?.message || 'Failed to stop agent';
+        return res.status(500).json({ error: message });
+    }
+});
+
+app.get('/api/mcp/server-info', async (_req, res) => {
+    const result = await mcpClient.serverInfo();
+    if (!result.ok) {
+        return res.status(502).json({ error: result.error });
+    }
+    return res.json(result.data);
+});
+
+app.get('/api/llm-agents/:id/mcp/account', async (req, res) => {
+    try {
+        const agent = llmCapitalManager.getAgent(req.params.id);
+        if (!agent) {
+            return res.status(404).json({ error: 'Agent not found' });
+        }
+
+        const [accountInfo, accountTx] = await Promise.all([
+            mcpClient.accountInfo(agent.walletAddress),
+            mcpClient.accountTransactions(agent.walletAddress, 20)
+        ]);
+
+        if (!accountInfo.ok) {
+            return res.status(502).json({ error: accountInfo.error || 'MCP account_info failed' });
+        }
+
+        return res.json({
+            walletAddress: agent.walletAddress,
+            accountInfo: accountInfo.data,
+            recentTransactions: accountTx.ok ? accountTx.data : { error: accountTx.error }
+        });
+    } catch (error: any) {
+        return res.status(500).json({ error: 'Failed to fetch agent MCP account context', message: error?.message });
+    }
+});
+
 // Settings Management
 app.get('/api/settings', async (_req, res) => {
     try {
-        // TODO: Implement settings storage
-        const settings = {
-            primaryWallet: getWallet().address,
-            autoProfitCollection: false,
-            profitCollectionThreshold: 10,
-            notifications: {
-                snipes: true,
-                profitTargets: true,
-                stopLosses: true,
-                errors: true
-            },
-            trading: {
-                defaultMinLiquidity: 10,
-                defaultSnipeAmount: 2,
-                defaultProfitTarget: 12,
-                defaultStopLoss: 8,
-                maxPositionsPerBot: 12
-            }
-        };
+        const settings = loadSettings();
+        settings.primaryWallet = getWalletForUser(userId).address;
         return res.json(settings);
     } catch (error) {
         return res.status(500).json({ error: 'Failed to fetch settings' });
     }
 });
 
-app.put('/api/settings', async (_req, res) => {
+app.put('/api/settings', async (req, res) => {
     try {
-        // settings = _req.body; // For future settings persistence
-        // TODO: Implement settings persistence
+        const current = loadSettings();
+        const body = req.body as Partial<AppSettings>;
+        const updated: AppSettings = {
+            ...current,
+            ...(typeof body.autoProfitCollection === 'boolean' && { autoProfitCollection: body.autoProfitCollection }),
+            ...(typeof body.profitCollectionThreshold === 'number' && { profitCollectionThreshold: body.profitCollectionThreshold }),
+            ...(body.notifications && typeof body.notifications === 'object' && {
+                notifications: { ...current.notifications, ...body.notifications }
+            }),
+            ...(body.trading && typeof body.trading === 'object' && {
+                trading: { ...current.trading, ...body.trading }
+            })
+        };
+        saveSettings(updated);
         return res.json({ success: true });
     } catch (error) {
         return res.status(500).json({ error: 'Failed to save settings' });

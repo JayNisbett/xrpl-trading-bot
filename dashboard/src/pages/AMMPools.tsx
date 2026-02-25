@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import toast from 'react-hot-toast'
 import { formatDistanceToNow } from 'date-fns'
+import { apiFetch } from '../lib/api'
 
 interface PoolMetrics {
   ammId: string
@@ -56,9 +57,9 @@ export default function AMMPools() {
     
     try {
       const [poolsRes, positionsRes, statsRes] = await Promise.all([
-        fetch('http://localhost:3000/api/amm/pools'),
-        fetch('http://localhost:3000/api/amm/positions'),
-        fetch('http://localhost:3000/api/amm/stats')
+        apiFetch('/api/amm/pools'),
+        apiFetch('/api/amm/positions'),
+        apiFetch('/api/amm/stats')
       ])
 
       if (poolsRes.ok) setPools(await poolsRes.json())
@@ -126,7 +127,7 @@ export default function AMMPools() {
 
   const enterPool = async (pool: PoolMetrics, amount: number, strategy: string) => {
     try {
-      const response = await fetch('http://localhost:3000/api/amm/enter', {
+      const response = await apiFetch('/api/amm/enter', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -152,7 +153,7 @@ export default function AMMPools() {
     if (!confirm(`Exit ${position.asset1.currency}/${position.asset2.currency} position?`)) return
 
     try {
-      const response = await fetch('http://localhost:3000/api/amm/exit', {
+      const response = await apiFetch('/api/amm/exit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

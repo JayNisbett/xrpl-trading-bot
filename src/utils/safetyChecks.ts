@@ -10,9 +10,9 @@ export interface SafetyCheckResult {
     activePositions: number;
 }
 
-const BASE_RESERVE = 10; // XRP base account reserve
-const PER_TRUSTLINE_RESERVE = 2; // XRP per trust line
-const SAFETY_BUFFER = 1; // Keep 1 XRP buffer for fees
+const BASE_RESERVE = 1; // XRP base account reserve
+const PER_TRUSTLINE_RESERVE = .2; // XRP per trust line
+const SAFETY_BUFFER = 3; // Keep 1 XRP buffer for fees
 
 /**
  * Check if account has sufficient balance for a trade
@@ -41,9 +41,10 @@ export async function checkSufficientBalance(
         
         // Check if we can make this trade
         if (tradableXRP < amountToSpend) {
+            const availableDisplay = Math.max(0, tradableXRP);
             return {
                 canTrade: false,
-                reason: `Insufficient tradable balance. Have ${tradableXRP.toFixed(2)} XRP available, need ${amountToSpend} XRP. (Total: ${xrpBalance} XRP, Locked: ${totalLockedReserves} XRP, Buffer: ${SAFETY_BUFFER} XRP)`,
+                reason: `Insufficient tradable balance. Have ${availableDisplay.toFixed(2)} XRP available, need ${amountToSpend} XRP. (Total: ${xrpBalance} XRP, Locked: ${totalLockedReserves} XRP, Buffer: ${SAFETY_BUFFER} XRP)`,
                 availableXRP: xrpBalance,
                 lockedXRP: totalLockedReserves,
                 tradableXRP: Math.max(0, tradableXRP),
@@ -53,9 +54,10 @@ export async function checkSufficientBalance(
         
         // Check if we're getting dangerously low
         if (tradableXRP - amountToSpend < 1) {
+            const afterTrade = Math.max(0, tradableXRP - amountToSpend);
             return {
                 canTrade: false,
-                reason: `Trade would leave less than 1 XRP available. Current tradable: ${tradableXRP.toFixed(2)} XRP, after trade: ${(tradableXRP - amountToSpend).toFixed(2)} XRP`,
+                reason: `Trade would leave less than 1 XRP available. Current tradable: ${Math.max(0, tradableXRP).toFixed(2)} XRP, after trade: ${afterTrade.toFixed(2)} XRP`,
                 availableXRP: xrpBalance,
                 lockedXRP: totalLockedReserves,
                 tradableXRP: Math.max(0, tradableXRP),

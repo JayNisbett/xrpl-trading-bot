@@ -1,6 +1,12 @@
 import { Client } from 'xrpl';
 import { poolAnalyzer, PoolMetrics } from './poolAnalyzer';
 
+/** Normalized asset (XRP or issued token) for a pool pair */
+export type PoolAsset = { currency: string; issuer?: string };
+
+/** A pool identified by its two assets */
+export type PoolPair = { asset1: PoolAsset; asset2: PoolAsset };
+
 /**
  * AMM POOL SCANNER
  * Discovers and tracks AMM pools on XRPL
@@ -48,19 +54,123 @@ export const KNOWN_TOKENS = [
 ];
 
 /**
- * Dynamically discover AMM pools from the ledger
- * This scans for actual AMM accounts on the network
+ * Normalize ledger Asset to PoolAsset (XRP has no issuer)
+ */
+function normalizeAsset(asset: { currency: string; issuer?: string }): PoolAsset {
+    const currency = (asset.currency || '').trim();
+    if (currency === 'XRP' || !currency) {
+        return { currency: 'XRP' };
+    }
+    return { currency, issuer: asset.issuer || '' };
+}
+
+/** Delay between ledger_data pages to avoid node rate limit (slowDown). */
+const LEDGER_PAGE_DELAY_MS = 600;
+/** On slowDown, wait this long before retry; then double for next retry. */
+const SLOWDOWN_BACKOFF_MS = 2000;
+const MAX_SLOWDOWN_RETRIES = 4;
+
+/**
+ * Request one page of ledger_data with retries on slowDown (rate limit).
+ */
+async function ledgerDataRequest(client: Client, marker?: string): Promise<{ state: any[]; marker?: string }> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= MAX_SLOWDOWN_RETRIES; attempt++) {
+        try {
+            const req: any = {
+                command: 'ledger_data',
+                ledger_index: 'validated',
+                type: 'AMM',
+                limit: 128
+            };
+            if (marker) req.marker = marker;
+
+            const resp: any = await client.request(req);
+            const err = resp.result?.error || resp.error;
+            const errCode = resp.result?.error_code ?? resp.error_code;
+
+            if (err === 'slowDown' || errCode === 10) {
+                const waitMs = SLOWDOWN_BACKOFF_MS * Math.pow(2, attempt);
+                console.log(`   ⏳ Node rate limit (slowDown); waiting ${waitMs / 1000}s before retry...`);
+                await delay(waitMs);
+                lastError = new Error('slowDown');
+                continue;
+            }
+
+            if (err) {
+                throw new Error(err || resp.result?.error_message || 'ledger_data error');
+            }
+
+            return {
+                state: Array.isArray(resp.result?.state) ? resp.result.state : [],
+                marker: resp.result?.marker
+            };
+        } catch (e: any) {
+            const isSlowDown = e?.data?.error === 'slowDown' || e?.data?.error_code === 10 || e?.message === 'slowDown';
+            if (isSlowDown && attempt < MAX_SLOWDOWN_RETRIES) {
+                const waitMs = SLOWDOWN_BACKOFF_MS * Math.pow(2, attempt);
+                console.log(`   ⏳ Node rate limit; waiting ${waitMs / 1000}s before retry...`);
+                await delay(waitMs);
+                lastError = e;
+                continue;
+            }
+            throw e;
+        }
+    }
+    throw lastError;
+}
+
+/**
+ * Discover all AMM pools from the ledger via ledger_data (type=AMM).
+ * Uses pacing and retries on slowDown to avoid overloading the node.
+ */
+export async function discoverAMMPoolsFromLedger(client: Client): Promise<PoolPair[]> {
+    const pairs: PoolPair[] = [];
+    const seen = new Set<string>();
+    let marker: string | undefined;
+
+    try {
+        console.log('🔍 Discovering AMM pools from ledger (ledger_data type=AMM)...');
+        do {
+            const { state, marker: nextMarker } = await ledgerDataRequest(client, marker);
+            marker = nextMarker;
+
+            for (const entry of state) {
+                if (entry.LedgerEntryType !== 'AMM') continue;
+                const a = entry.Asset && typeof entry.Asset === 'object' ? entry.Asset : {};
+                const a2 = entry.Asset2 && typeof entry.Asset2 === 'object' ? entry.Asset2 : {};
+                const asset1 = normalizeAsset(a);
+                const asset2 = normalizeAsset(a2);
+                if (!asset1.currency || !asset2.currency) continue;
+                const key = [asset1.currency, asset1.issuer || '', asset2.currency, asset2.issuer || ''].sort().join('|');
+                if (seen.has(key)) continue;
+                seen.add(key);
+                pairs.push({ asset1, asset2 });
+            }
+
+            if (state.length > 0) {
+                console.log(`   📄 Fetched ${state.length} AMM entries (total so far: ${pairs.length})`);
+            }
+            await delay(LEDGER_PAGE_DELAY_MS);
+        } while (marker);
+
+        console.log(`✅ Ledger discovery complete: ${pairs.length} AMM pools`);
+        return pairs;
+    } catch (error) {
+        console.error('Error during ledger AMM discovery:', error);
+        return pairs;
+    }
+}
+
+/**
+ * Dynamically discover AMM pools by probing known tokens (legacy).
+ * Prefer discoverAMMPoolsFromLedger for many more pools.
  */
 export async function discoverAMMPools(client: Client): Promise<Array<{ currency: string; issuer: string; name: string }>> {
     const discoveredTokens: Array<{ currency: string; issuer: string; name: string }> = [];
     const seenTokens = new Set<string>();
-    
-    console.log('🔍 Starting dynamic AMM pool discovery...');
-    
+
     try {
-        // Probe each known token once for XRP/token AMM existence.
-        // (Previous implementation repeated this loop per seed account,
-        // creating redundant requests and reducing scan throughput.)
         for (const token of KNOWN_TOKENS) {
             const tokenKey = `${token.currency}:${token.issuer}`;
             if (seenTokens.has(tokenKey)) continue;
@@ -75,22 +185,13 @@ export async function discoverAMMPools(client: Client): Promise<Array<{ currency
                 if (ammInfoResponse?.result?.amm) {
                     discoveredTokens.push(token);
                     seenTokens.add(tokenKey);
-                    console.log(`  ✅ Found active AMM: XRP/${token.name}`);
                 }
-            } catch (ammError: any) {
-                // Pool doesn't exist, skip quietly.
-                if (!ammError.message?.includes('actNotFound')) {
-                    // Unexpected errors can be surfaced later if needed.
-                }
+            } catch {
+                // Pool doesn't exist, skip
             }
-
-            // keep a small gap between probes to avoid node overload
             await delay(80);
         }
-
-        console.log(`✅ Discovery complete: Found ${discoveredTokens.length} active AMM pools`);
         return discoveredTokens;
-        
     } catch (error) {
         console.error('Error during AMM pool discovery:', error);
         return [];
@@ -98,48 +199,46 @@ export async function discoverAMMPools(client: Client): Promise<Array<{ currency
 }
 
 /**
- * Scan for active AMM pools
+ * Scan for active AMM pools (uses ledger discovery when useDynamicDiscovery is true)
  */
 export async function scanAMMPools(client: Client, useDynamicDiscovery: boolean = false): Promise<PoolMetrics[]> {
     console.log('🔍 Scanning for active AMM pools...');
     const pools: PoolMetrics[] = [];
-    let tokensToScan = KNOWN_TOKENS;
+    let pairs: PoolPair[];
 
     try {
-        // If dynamic discovery is enabled, find active pools first
         if (useDynamicDiscovery) {
-            console.log('   🔄 Using dynamic pool discovery...');
-            const discoveredTokens = await discoverAMMPools(client);
-            
-            // Merge discovered tokens with known tokens (avoiding duplicates)
-            const tokenSet = new Set(KNOWN_TOKENS.map(t => `${t.currency}:${t.issuer}`));
-            const newTokens = discoveredTokens.filter(t => !tokenSet.has(`${t.currency}:${t.issuer}`));
-            
-            tokensToScan = [...KNOWN_TOKENS, ...newTokens];
-            console.log(`   📊 Scanning ${tokensToScan.length} tokens (${KNOWN_TOKENS.length} known + ${newTokens.length} discovered)`);
+            pairs = await discoverAMMPoolsFromLedger(client);
+            console.log(`   📊 Analyzing ${pairs.length} pools from ledger`);
+        } else {
+            pairs = KNOWN_TOKENS.map(t => ({
+                asset1: { currency: 'XRP' as const },
+                asset2: { currency: t.currency, issuer: t.issuer }
+            }));
         }
-        
-        // Scan all tokens (known + discovered)
-        for (const token of tokensToScan) {
+
+        for (const pair of pairs) {
             try {
-                const metrics = await poolAnalyzer.analyzePool(client, token);
-                if (metrics && metrics.tvl > 0) {
+                const metrics = await poolAnalyzer.analyzePoolByAssets(client, pair.asset1, pair.asset2);
+                if (metrics && (metrics.tvl > 0 || (metrics.asset1.currency !== 'XRP' && metrics.asset2.currency !== 'XRP'))) {
                     pools.push(metrics);
-                    console.log(`   ✅ Found pool: ${token.name} (TVL: ${metrics.tvl.toFixed(2)} XRP)`);
+                    const label = pair.asset1.currency === 'XRP'
+                        ? `XRP/${pair.asset2.currency}`
+                        : `${pair.asset1.currency}/${pair.asset2.currency}`;
+                    if (metrics.tvl > 0) {
+                        console.log(`   ✅ ${label} TVL: ${metrics.tvl.toFixed(2)} XRP`);
+                    }
                 }
-            } catch (error) {
-                // Pool doesn't exist, skip
+            } catch {
+                // skip
             }
-
-            // Rate limiting to avoid overwhelming the node
-            await delay(useDynamicDiscovery ? 150 : 200);
+            await delay(useDynamicDiscovery ? 80 : 200);
         }
-
     } catch (error) {
         console.error('Error scanning pools:', error);
     }
 
-    console.log(`   ✅ Found ${pools.length} total active pools`);
+    console.log(`   ✅ Found ${pools.length} active pools`);
     return pools;
 }
 

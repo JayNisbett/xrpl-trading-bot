@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import toast from 'react-hot-toast'
+import { API_BASE } from '../lib/api'
 
 interface BotsProps {}
 
@@ -20,8 +21,6 @@ interface BotInstance {
     enabled: boolean
   }
 }
-
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3000'
 
 export default function Bots(_props: BotsProps) {
   const navigate = useNavigate()

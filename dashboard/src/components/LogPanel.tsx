@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { Socket } from 'socket.io-client'
+import { API_BASE } from '../lib/api'
 
 interface LogEntry {
   timestamp: string
@@ -65,8 +66,8 @@ export default function LogPanel({ botId, botName, socket }: LogPanelProps) {
   const fetchLogs = async () => {
     try {
       const url = botId && botId !== ''
-        ? `http://localhost:3000/api/logs/bot/${botId}?limit=500`
-        : 'http://localhost:3000/api/logs?limit=500'
+        ? `${API_BASE}/api/logs/bot/${botId}?limit=500`
+        : `${API_BASE}/api/logs?limit=500`
       
       const response = await fetch(url)
       if (response.ok) {

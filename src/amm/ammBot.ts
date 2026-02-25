@@ -3,11 +3,14 @@ import { broadcastUpdate } from '../api/server';
 import { saveUser } from '../database/storage';
 import { User } from '../database/user';
 import { logger } from '../utils/logger';
-import { getWallet } from '../xrpl/wallet';
+import { getWalletForUser } from '../xrpl/walletProvider';
 import { AMMArbitrageExecutor } from './arbitrageExecutor';
 import { AMMPoliquidityProvider, LPPosition } from './liquidityProvider';
 import { AMMPoolAnalyzer, PoolMetrics } from './poolAnalyzer';
 import { filterQualityPools, rankPoolsByStrategy, scanAMMPools, scanForArbitrage } from './poolScanner';
+import { canExecuteXrpTrade, recordExecutedTrade } from '../llmCapital/guards';
+import { llmAllowsTrade } from '../llmCapital/llmDecision';
+import { checkSufficientBalance, checkPositionLimit } from '../utils/safetyChecks';
 
 export interface AMMBotConfig {
     dynamicPoolDiscovery?: boolean; // Enable dynamic pool discovery
@@ -53,6 +56,7 @@ export class AMMBot {
     private checkInterval: NodeJS.Timeout | null = null;
     private botId?: string;
     private botName?: string;
+    private loopLock = false;
 
     constructor(userId: string, config: AMMBotConfig, botId?: string, botName?: string) {
         this.userId = userId;
@@ -116,7 +120,11 @@ export class AMMBot {
     private async runMainLoop(): Promise<void> {
         const check = async () => {
             if (!this.isRunning || !this.client) return;
-
+            if (this.loopLock) {
+                logger.debug('AMM', 'Main loop still in progress, skipping this tick', null, this.botId, this.botName);
+                return;
+            }
+            this.loopLock = true;
             try {
                 // Step 1: Arbitrage detection and execution
                 if (this.config.arbitrage.enabled) {
@@ -136,6 +144,8 @@ export class AMMBot {
 
             } catch (error) {
                 console.error('Error in AMM bot loop:', error);
+            } finally {
+                this.loopLock = false;
             }
         };
 
@@ -153,11 +163,12 @@ export class AMMBot {
         if (!this.client) return;
 
         try {
+            const dynamicDiscovery = this.config.dynamicPoolDiscovery ?? true;
             logger.debug('Arbitrage', 'Scanning for opportunities...',
                 {
                     minProfit: this.config.arbitrage.minProfitPercent,
                     maxTrade: this.config.arbitrage.maxTradeAmount,
-                    dynamicDiscovery: this.config.dynamicPoolDiscovery ?? true
+                    dynamicDiscovery
                 },
                 this.botId, this.botName);
 
@@ -165,7 +176,7 @@ export class AMMBot {
                 this.client,
                 this.config.arbitrage.minProfitPercent,
                 this.config.arbitrage.maxTradeAmount,
-                this.config.dynamicPoolDiscovery || false
+                dynamicDiscovery
             );
 
             if (opportunities.length === 0) {
@@ -185,14 +196,35 @@ export class AMMBot {
                     continue;
                 }
 
+                const wallet = getWalletForUser(this.userId);
+                const balanceCheck = await checkSufficientBalance(this.client, wallet.address, opp.tradeAmount);
+                if (!balanceCheck.canTrade) {
+                    logger.warning('Arbitrage', 'Safety check: insufficient balance for arbitrage',
+                        { reason: balanceCheck.reason, tradeAmount: opp.tradeAmount }, this.botId, this.botName);
+                    continue;
+                }
+                // Arbitrage is round-trip (buy then sell); do not apply position limit here (only for LP entry).
+
+                const llmGuard = canExecuteXrpTrade(this.userId, 'amm', opp.tradeAmount);
+                if (!llmGuard.allowed) {
+                    logger.warning('Arbitrage', 'LLM policy blocked AMM arbitrage trade',
+                        { reason: llmGuard.reason, tradeAmount: opp.tradeAmount }, this.botId, this.botName);
+                    continue;
+                }
+
+                const llmOk = await llmAllowsTrade(this.userId, 'amm', opp.tradeAmount, { token: opp.token.currency, description: 'arbitrage' });
+                if (!llmOk.allowed) {
+                    logger.warning('Arbitrage', 'LLM service declined AMM arbitrage trade',
+                        { reason: llmOk.reason, tradeAmount: opp.tradeAmount }, this.botId, this.botName);
+                    continue;
+                }
+
                 logger.info('Arbitrage', `Executing arbitrage opportunity`,
                     {
                         token: opp.token.currency,
                         expectedProfit: `${opp.priceDifference.toFixed(2)}%`,
                         tradeAmount: opp.tradeAmount
                     }, this.botId, this.botName);
-
-                const wallet = getWallet();
                 const execution = await this.arbitrageExecutor.executeArbitrage(
                     this.client,
                     wallet,
@@ -200,6 +232,7 @@ export class AMMBot {
                 );
 
                 if (execution.executed) {
+                    recordExecutedTrade(this.userId, 'amm', opp.tradeAmount);
                     logger.success('Arbitrage', `Arbitrage executed successfully`,
                         {
                             token: opp.token.currency,
@@ -248,8 +281,9 @@ export class AMMBot {
 
             logger.debug('Liquidity', 'Scanning for profitable pools...', null, this.botId, this.botName);
 
-            // Scan for all available pools
-            const allPools = await scanAMMPools(this.client);
+            // Scan for all available pools (use dynamic discovery when enabled)
+            const useDynamicDiscovery = this.config.dynamicPoolDiscovery ?? true;
+            const allPools = await scanAMMPools(this.client, useDynamicDiscovery);
             logger.info('Liquidity', `Scanned ${allPools.length} AMM pools`,
                 { totalPools: allPools.length }, this.botId, this.botName);
 
@@ -270,8 +304,13 @@ export class AMMBot {
                 return;
             }
 
-            // Rank pools by strategy
-            const rankedPools = rankPoolsByStrategy(qualityPools, 'balanced');
+            // Rank pools by configured strategy
+            const rankingStrategy = this.config.liquidity.strategy === 'one-sided'
+                ? 'conservative'
+                : this.config.liquidity.strategy === 'auto'
+                    ? 'aggressive'
+                    : 'balanced';
+            const rankedPools = rankPoolsByStrategy(qualityPools, rankingStrategy);
 
             logger.info('Liquidity', `Found ${rankedPools.length} high-yield pools`,
                 { count: rankedPools.length }, this.botId, this.botName);
@@ -293,11 +332,41 @@ export class AMMBot {
         if (!this.client) return;
 
         try {
-            const wallet = getWallet();
+            const wallet = getWalletForUser(this.userId);
             const depositAmount = Math.min(
                 this.config.risk.maxPositionSize,
                 pool.liquidityDepth * 0.1 // Use 10% of liquidity depth
             );
+
+            const balanceCheck = await checkSufficientBalance(this.client, wallet.address, depositAmount);
+            if (!balanceCheck.canTrade) {
+                logger.warning('Liquidity', 'Safety check: insufficient balance for LP entry',
+                    { reason: balanceCheck.reason, depositAmount }, this.botId, this.botName);
+                return;
+            }
+            const positionLimitCheck = checkPositionLimit(
+                balanceCheck.activePositions,
+                balanceCheck.availableXRP,
+                this.config.liquidity.maxPositions
+            );
+            if (!positionLimitCheck.canAddPosition) {
+                logger.warning('Liquidity', 'Safety check: position limit for LP entry',
+                    { reason: positionLimitCheck.reason }, this.botId, this.botName);
+                return;
+            }
+
+            const llmGuard = canExecuteXrpTrade(this.userId, 'amm', depositAmount);
+            if (!llmGuard.allowed) {
+                logger.warning('Liquidity', 'LLM policy blocked LP entry',
+                    { reason: llmGuard.reason, depositAmount }, this.botId, this.botName);
+                return;
+            }
+
+            const llmOk = await llmAllowsTrade(this.userId, 'amm', depositAmount, { description: 'LP entry' });
+            if (!llmOk.allowed) {
+                logger.warning('Liquidity', 'LLM service declined LP entry', { reason: llmOk.reason, depositAmount }, this.botId, this.botName);
+                return;
+            }
 
             logger.info('Liquidity', `Preparing to enter position`, {
                 pool: `${pool.asset1.currency}/${pool.asset2.currency}`,
@@ -324,6 +393,8 @@ export class AMMBot {
             }
 
             if (result.success) {
+                recordExecutedTrade(this.userId, 'amm', depositAmount);
+
                 // Create position record
                 const strategyUsed: 'one-sided' | 'balanced' | 'dual-sided' =
                     this.config.liquidity.strategy === 'auto' ? 'one-sided' : this.config.liquidity.strategy;
@@ -452,7 +523,7 @@ export class AMMBot {
         if (!this.client) return;
 
         try {
-            const wallet = getWallet();
+            const wallet = getWalletForUser(this.userId);
             const currentPool = await this.poolAnalyzer.analyzePool(
                 this.client,
                 { currency: position.asset1.currency, issuer: position.asset1.issuer || '' }

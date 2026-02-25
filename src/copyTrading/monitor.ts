@@ -1,28 +1,39 @@
 import { Client } from 'xrpl';
 import { getTransactionTime, hexToString } from '../xrpl/utils';
 import { TradeInfo, CopyTradeData } from '../types';
+import { getCheckpoint, setCheckpoint } from './checkpoints';
 
 const processedTransactions = new Set<string>();
 
+function dedupeKey(userId: string, traderAddress: string, txHash: string): string {
+    return `${userId}:${traderAddress}:${txHash}`;
+}
+
+function checkpointKey(userId: string, traderAddress: string): string {
+    return `${userId}:${traderAddress}`;
+}
+
 export async function checkTraderTransactions(
     client: Client,
+    userId: string,
     traderAddress: string,
     startTime: Date | null = null,
     limit: number = 20
 ): Promise<CopyTradeData[]> {
     try {
+        const cpKey = checkpointKey(userId, traderAddress);
+        const lastCheckpoint = getCheckpoint(cpKey);
+
         const response = await client.request({
             command: 'account_tx',
             account: traderAddress,
             limit,
-            ledger_index_min: -1,
+            ledger_index_min: lastCheckpoint > 0 ? lastCheckpoint : -1,
             ledger_index_max: -1,
             forward: false
         });
 
         const transactions = (response.result as any)?.transactions || [];
-        const now = new Date();
-        const oneMinuteAgo = new Date(now.getTime() - 1 * 60 * 1000);
 
         const newTrades: CopyTradeData[] = [];
 
@@ -35,7 +46,8 @@ export async function checkTraderTransactions(
                 continue;
             }
 
-            if (processedTransactions.has(txHash)) {
+            const uniqueKey = dedupeKey(userId, traderAddress, txHash);
+            if (processedTransactions.has(uniqueKey)) {
                 continue;
             }
 
@@ -43,18 +55,19 @@ export async function checkTraderTransactions(
                 continue;
             }
 
-            const txTime = getTransactionTime(txData);
-            if (txTime && txTime < oneMinuteAgo) {
+            const txLedger = Number((txData as any)?.tx?.ledger_index || (txData as any)?.ledger_index || 0);
+            if (lastCheckpoint > 0 && txLedger > 0 && txLedger < lastCheckpoint) {
                 continue;
             }
 
+            const txTime = getTransactionTime(txData);
             if (startTime && txTime && txTime < startTime) {
                 continue;
             }
 
             const tradeInfo = detectTradingActivity(tx, meta, traderAddress);
             if (tradeInfo) {
-                processedTransactions.add(txHash);
+                processedTransactions.add(uniqueKey);
                 newTrades.push({
                     txHash,
                     tx,
@@ -64,8 +77,19 @@ export async function checkTraderTransactions(
             }
         }
 
-        if (processedTransactions.size > 1000) {
-            const oldEntries = Array.from(processedTransactions).slice(0, 500);
+        let maxLedgerSeen = lastCheckpoint;
+        for (const txData of transactions) {
+            const txLedger = Number((txData as any)?.tx?.ledger_index || (txData as any)?.ledger_index || 0);
+            if (txLedger > maxLedgerSeen) {
+                maxLedgerSeen = txLedger;
+            }
+        }
+        if (maxLedgerSeen > lastCheckpoint) {
+            setCheckpoint(cpKey, maxLedgerSeen);
+        }
+
+        if (processedTransactions.size > 5000) {
+            const oldEntries = Array.from(processedTransactions).slice(0, 2500);
             oldEntries.forEach(entry => processedTransactions.delete(entry));
         }
 

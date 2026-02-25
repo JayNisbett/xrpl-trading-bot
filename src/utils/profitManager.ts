@@ -1,10 +1,12 @@
 import { Client } from 'xrpl';
-import { getWallet, getTokenBalances } from '../xrpl/wallet';
+import { getTokenBalances } from '../xrpl/wallet';
+import { getWalletForUser } from '../xrpl/walletProvider';
 import { executeSell, getAMMInfo } from '../xrpl/amm';
 import { User, UserModel } from '../database/user';
 import config from '../config';
 import TradeLogger from './tradeLogger';
 import { broadcastUpdate } from '../api/server';
+import { recordRealizedLoss } from '../llmCapital/guards';
 
 /**
  * PROFIT MANAGEMENT SYSTEM
@@ -27,7 +29,7 @@ export async function checkAndTakeProfits(userId: string): Promise<void> {
         if (!user) return;
 
         const client = (await import('../xrpl/client')).getClient();
-        const wallet = getWallet();
+        const wallet = getWalletForUser(userId);
         
         // Get current token holdings with timeout handling
         let tokenBalances;
@@ -177,6 +179,7 @@ async function executeProfitTake(
                 });
             } else {
                 logger.recordStopLoss(purchase.tokenSymbol, profit, profitPercent);
+                recordRealizedLoss(user.userId, Math.abs(profit));
                 // Broadcast stop loss to dashboard
                 broadcastUpdate('stopLoss', {
                     symbol: purchase.tokenSymbol,

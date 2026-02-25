@@ -1,19 +1,22 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { io, Socket } from 'socket.io-client'
 import toast, { Toaster } from 'react-hot-toast'
 import './App.css'
 import Sidebar from './components/Sidebar'
-import Overview from './pages/Overview'
-import Positions from './pages/Positions'
-import AMMPools from './pages/AMMPools'
-import BotConfigs from './pages/BotConfigs'
-import BotDetail from './pages/BotDetail'
-import Bots from './pages/Bots'
-import Transactions from './pages/Transactions'
-import Wallets from './pages/Wallets'
-import Settings from './pages/Settings'
 import type { Position } from './components/PositionsList'
+import { API_BASE, SOCKET_URL } from './lib/api'
+
+const Overview = lazy(() => import('./pages/Overview'))
+const Positions = lazy(() => import('./pages/Positions'))
+const AMMPools = lazy(() => import('./pages/AMMPools'))
+const BotConfigs = lazy(() => import('./pages/BotConfigs'))
+const BotDetail = lazy(() => import('./pages/BotDetail'))
+const Bots = lazy(() => import('./pages/Bots'))
+const Transactions = lazy(() => import('./pages/Transactions'))
+const Wallets = lazy(() => import('./pages/Wallets'))
+const Settings = lazy(() => import('./pages/Settings'))
+const LLMManager = lazy(() => import('./pages/LLMManager'))
 
 interface AccountStatusData {
   xrpBalance: number
@@ -63,8 +66,11 @@ interface BotStatus {
   copyTradingActive: boolean
 }
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3000'
-const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || API_BASE
+interface SystemHealth {
+  api: 'ok' | 'down'
+  ws: 'ok' | 'down'
+  mcp: 'ok' | 'down'
+}
 
 function App() {
   const [socket, setSocket] = useState<Socket | null>(null)
@@ -78,6 +84,7 @@ function App() {
   const [botStatus, setBotStatus] = useState<BotStatus>({ sniperActive: false, copyTradingActive: false })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [health, setHealth] = useState<SystemHealth>({ api: 'down', ws: 'down', mcp: 'down' })
   const activityIdCounter = useRef(0)
 
   const addActivity = (type: Activity['type'], message: string, data?: any) => {
@@ -99,6 +106,7 @@ function App() {
     newSocket.on('connect', () => {
       console.log('Connected to bot')
       setConnected(true)
+      setHealth(prev => ({ ...prev, ws: 'ok' }))
       setError(null)
       addActivity('status', 'Connected to trading bot')
       toast.success('Connected to trading bot')
@@ -107,6 +115,7 @@ function App() {
     newSocket.on('disconnect', () => {
       console.log('Disconnected from bot')
       setConnected(false)
+      setHealth(prev => ({ ...prev, ws: 'down' }))
       addActivity('error', 'Disconnected from trading bot')
       toast.error('Disconnected from trading bot')
     })
@@ -217,12 +226,13 @@ function App() {
     // Fetch initial data
     const fetchData = async () => {
       try {
-        const [positionsRes, statusRes, metricsRes, txRes, historyRes] = await Promise.all([
+        const [positionsRes, statusRes, metricsRes, txRes, historyRes, mcpRes] = await Promise.all([
           fetch(`${API_BASE}/api/positions`),
           fetch(`${API_BASE}/api/status`),
           fetch(`${API_BASE}/api/performance`),
           fetch(`${API_BASE}/api/transactions`),
-          fetch(`${API_BASE}/api/history`)
+          fetch(`${API_BASE}/api/history`),
+          fetch(`${API_BASE}/api/mcp/server-info`)
         ])
 
         const positionsData = await positionsRes.json()
@@ -244,10 +254,12 @@ function App() {
           setProfitHistory(historyData)
         }
         
+        setHealth(prev => ({ ...prev, api: 'ok', mcp: mcpRes.ok ? 'ok' : 'down' }))
         setLoading(false)
         setError(null)
       } catch (error) {
         console.error('Failed to fetch data:', error)
+        setHealth(prev => ({ ...prev, api: 'down', mcp: 'down' }))
         setError('Failed to load dashboard data')
         setLoading(false)
       }
@@ -304,6 +316,11 @@ function App() {
               <span className="dot"></span>
               {connected ? 'Live' : 'Disconnected'}
             </div>
+            <div className="system-health-bar">
+              <span className={`health-pill ${health.api}`}>API {health.api.toUpperCase()}</span>
+              <span className={`health-pill ${health.ws}`}>WS {health.ws.toUpperCase()}</span>
+              <span className={`health-pill ${health.mcp}`}>MCP {health.mcp.toUpperCase()}</span>
+            </div>
           </header>
 
           {error && (
@@ -316,53 +333,59 @@ function App() {
             </div>
           )}
 
-          <Routes>
-            <Route 
-              path="/" 
-              element={
-                <Overview 
-                  accountStatus={accountStatus}
-                  metrics={metrics}
-                  profitHistory={profitHistory}
-                  activities={activities}
-                  transactions={transactions}
-                  walletAddress={accountStatus?.walletAddress || ''}
-                />
-              } 
-            />
-            <Route 
-              path="/positions" 
-              element={<Positions positions={positions} />} 
-            />
-            <Route 
-              path="/amm" 
-              element={<AMMPools />} 
-            />
-            <Route 
-              path="/configs" 
-              element={<BotConfigs socket={socket} />} 
-            />
-            <Route 
-              path="/bot/:botId" 
-              element={<BotDetail socket={socket} />} 
-            />
-            <Route 
-              path="/bots" 
-              element={<Bots />} 
-            />
-            <Route 
-              path="/transactions" 
-              element={<Transactions transactions={transactions} />} 
-            />
-            <Route 
-              path="/wallets" 
-              element={<Wallets />} 
-            />
-            <Route 
-              path="/settings" 
-              element={<Settings />} 
-            />
-          </Routes>
+          <Suspense fallback={<div className="route-loading">Loading page...</div>}>
+            <Routes>
+              <Route 
+                path="/" 
+                element={
+                  <Overview 
+                    accountStatus={accountStatus}
+                    metrics={metrics}
+                    profitHistory={profitHistory}
+                    activities={activities}
+                    transactions={transactions}
+                    walletAddress={accountStatus?.walletAddress || ''}
+                  />
+                } 
+              />
+              <Route 
+                path="/positions" 
+                element={<Positions positions={positions} />} 
+              />
+              <Route 
+                path="/amm" 
+                element={<AMMPools />} 
+              />
+              <Route 
+                path="/configs" 
+                element={<BotConfigs socket={socket} />} 
+              />
+              <Route 
+                path="/bot/:botId" 
+                element={<BotDetail socket={socket} />} 
+              />
+              <Route 
+                path="/llm" 
+                element={<LLMManager />} 
+              />
+              <Route 
+                path="/bots" 
+                element={<Bots />} 
+              />
+              <Route 
+                path="/transactions" 
+                element={<Transactions transactions={transactions} />} 
+              />
+              <Route 
+                path="/wallets" 
+                element={<Wallets />} 
+              />
+              <Route 
+                path="/settings" 
+                element={<Settings />} 
+              />
+            </Routes>
+          </Suspense>
         </main>
       </div>
     </BrowserRouter>

@@ -1,6 +1,6 @@
 import { BotConfiguration } from './database/botConfigs';
 import { getClient } from './xrpl/client';
-import { getWallet } from './xrpl/wallet';
+import { getWalletForUser } from './xrpl/walletProvider';
 import * as sniper from './sniper';
 import * as copyTrading from './copyTrading';
 import { User } from './database/user';
@@ -8,6 +8,7 @@ import { AMMBot } from './amm/ammBot';
 import config from './config';
 import { logger } from './utils/logger';
 import { setAMMBotInstance } from './api/server';
+import { addRunningConfig, removeRunningConfig } from './database/instanceRestore';
 
 export interface BotInstance {
     id: string;
@@ -56,11 +57,13 @@ class BotInstanceManager {
             logger.info('BotManager', `Created instance ${instanceId}`, 
                 { totalInstances: this.instances.size }, instanceId, botConfig.name);
 
+            const startupFailures: string[] = [];
+
             // Initialize user if not exists
             let user = await User.findOne({ userId });
             if (!user) {
                 logger.info('User', `Creating new user: ${userId}`, null, instanceId, botConfig.name);
-                const wallet = getWallet();
+                const wallet = getWalletForUser(userId);
                 user = await User.create({
                     userId,
                     walletAddress: wallet.address,
@@ -89,6 +92,7 @@ class BotInstanceManager {
                     } else {
                         logger.error('Sniper', `Failed to start sniper module`, 
                             { error: sniperResult.error }, instanceId, botConfig.name);
+                        startupFailures.push(`sniper: ${sniperResult.error || 'start failed'}`);
                     }
                 } else {
                     logger.info('Sniper', `Sniper already running for user, sharing instance`, null, instanceId, botConfig.name);
@@ -112,9 +116,11 @@ class BotInstanceManager {
                     } else {
                         logger.error('CopyTrading', `Failed to start copy trading`, 
                             { error: copyResult.error }, instanceId, botConfig.name);
+                        startupFailures.push(`copyTrading: ${copyResult.error || 'start failed'}`);
                     }
                 } else if (botConfig.copyTrading.traderAddresses.length === 0) {
                     logger.warning('CopyTrading', `No trader addresses configured`, null, instanceId, botConfig.name);
+                    startupFailures.push('copyTrading: no trader addresses configured');
                 } else {
                     logger.info('CopyTrading', `Copy trading already running for user, sharing instance`, 
                         null, instanceId, botConfig.name);
@@ -141,24 +147,50 @@ class BotInstanceManager {
                     risk: botConfig.amm.risk
                 };
 
-                const ammBot = new AMMBot(userId, ammConfig, instanceId, botConfig.name);
-                const client = await getClient();
-                await ammBot.start(client);
-                
-                instance.ammBot = ammBot;
-                setAMMBotInstance(ammBot);
-                logger.success('AMM', `AMM bot module started successfully`, null, instanceId, botConfig.name);
+                try {
+                    const ammBot = new AMMBot(userId, ammConfig, instanceId, botConfig.name);
+                    const client = await getClient();
+                    await ammBot.start(client);
+                    
+                    instance.ammBot = ammBot;
+                    setAMMBotInstance(ammBot);
+                    logger.success('AMM', `AMM bot module started successfully`, null, instanceId, botConfig.name);
+                } catch (ammError: any) {
+                    logger.error('AMM', `Failed to start AMM module`,
+                        { error: ammError?.message || 'unknown' }, instanceId, botConfig.name);
+                    startupFailures.push(`amm: ${ammError?.message || 'start failed'}`);
+                }
+            }
+
+            const startedAnyModule =
+                !!instance.ammBot ||
+                this.sniperRunning.has(userId) ||
+                this.copyTradingRunning.has(userId);
+
+            if (!startedAnyModule) {
+                instance.status = 'error';
+                instance.error = startupFailures.join('; ') || 'No modules started';
+                this.instances.set(instanceId, instance);
+                logger.error('BotManager', 'Bot instance failed to start any modules',
+                    { failures: startupFailures }, instanceId, botConfig.name);
+                return { success: false, error: instance.error };
             }
 
             instance.status = 'running';
+            if (startupFailures.length > 0) {
+                instance.error = `degraded: ${startupFailures.join('; ')}`;
+                logger.warning('BotManager', 'Bot instance started in degraded mode',
+                    { failures: startupFailures }, instanceId, botConfig.name);
+            }
             this.instances.set(instanceId, instance);
-            
+            addRunningConfig(userId, botConfig.id);
+
             const runningCount = Array.from(this.instances.values()).filter(i => i.status === 'running').length;
             logger.success('BotManager', `Bot instance started successfully`, 
                 { instanceId, totalInstances: this.instances.size, runningInstances: runningCount }, 
                 instanceId, botConfig.name);
             
-            return { success: true, instanceId };
+            return { success: true, instanceId, error: startupFailures.length > 0 ? instance.error : undefined };
         } catch (error: any) {
             logger.error('BotManager', `Failed to start bot: ${error.message}`, 
                 { error: error.stack, configId: botConfig.id }, instanceId, botConfig.name);
@@ -235,7 +267,8 @@ class BotInstanceManager {
 
             instance.status = 'stopped';
             this.instances.set(instanceId, instance);
-            
+            removeRunningConfig(instance.userId, instance.configId);
+
             const runningCount = Array.from(this.instances.values()).filter(i => i.status === 'running').length;
             logger.success('BotManager', `Bot instance stopped successfully`, 
                 { totalInstances: this.instances.size, runningInstances: runningCount }, 
@@ -286,6 +319,10 @@ class BotInstanceManager {
 
     getInstancesByConfigId(configId: string): BotInstance[] {
         return Array.from(this.instances.values()).filter(inst => inst.configId === configId);
+    }
+
+    getInstancesByUserId(userId: string): BotInstance[] {
+        return Array.from(this.instances.values()).filter(inst => inst.userId === userId);
     }
 
     async restartBot(instanceId: string): Promise<{ success: boolean; error?: string }> {

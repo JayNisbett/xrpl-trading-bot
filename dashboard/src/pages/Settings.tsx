@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import toast from 'react-hot-toast'
+import { apiFetch } from '../lib/api'
 
 export default function Settings() {
   const [settings, setSettings] = useState({
@@ -27,7 +28,7 @@ export default function Settings() {
 
   const handleSave = async () => {
     try {
-      const response = await fetch('http://localhost:3000/api/settings', {
+      const response = await apiFetch('/api/settings', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(settings)

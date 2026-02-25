@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { Socket } from 'socket.io-client'
+import { apiFetch } from '../lib/api'
 
 interface LogEntry {
   timestamp: string
@@ -73,11 +74,11 @@ export default function LogViewer({ botId, botName, maxHeight = '600px', socket 
 
   const fetchLogs = async () => {
     try {
-      const url = botId && botId !== ''
-        ? `http://localhost:3000/api/logs/bot/${botId}`
-        : 'http://localhost:3000/api/logs'
+      const path = botId && botId !== ''
+        ? `/api/logs/bot/${botId}`
+        : '/api/logs'
       
-      const response = await fetch(url)
+      const response = await apiFetch(path)
       if (response.ok) {
         const data = await response.json()
         setLogs(data.logs || [])
@@ -97,11 +98,11 @@ export default function LogViewer({ botId, botName, maxHeight = '600px', socket 
     if (!confirm(message)) return
 
     try {
-      const url = botId && botId !== ''
-        ? `http://localhost:3000/api/logs/bot/${botId}`
-        : 'http://localhost:3000/api/logs'
+      const path = botId && botId !== ''
+        ? `/api/logs/bot/${botId}`
+        : '/api/logs'
       
-      const response = await fetch(url, { method: 'DELETE' })
+      const response = await apiFetch(path, { method: 'DELETE' })
       if (response.ok) {
         setLogs([])
       }

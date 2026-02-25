@@ -6,6 +6,9 @@ import { BotOptions, BotStatus } from './types';
 import config from './config';
 import { startAPIServer, stopAPIServer } from './api/server';
 import * as BotConfigs from './database/botConfigs';
+import { loadLLMCapitalState } from './llmCapital/storage';
+import { llmCapitalManager } from './llmCapital/manager';
+import { getRunningConfigsByUserId } from './database/instanceRestore';
 import { botManager } from './botManager';
 import * as sniper from './sniper';
 import * as copyTrading from './copyTrading';
@@ -56,28 +59,79 @@ class XRPLTradingBot {
             console.log('Connected to XRPL network successfully');
 
             BotConfigs.loadConfigs();
+            BotConfigs.ensureOptimizedPresetConfigs();
             console.log('Bot configuration system initialized');
 
-            const defaultConfig = BotConfigs.getOrCreateDefaultConfig(config, this.mode);
-            const result = await botManager.startBot(defaultConfig, this.userId);
-
-            if (!result.success) {
-                throw new Error(result.error || 'Failed to start bot');
-            }
-
-            this.isRunning = true;
-            console.log('Bot started successfully (single source of truth: botManager)');
+            loadLLMCapitalState();
+            console.log('LLM capital state loaded');
 
             startAPIServer(3000, this.userId);
 
-            setTimeout(async () => {
-                try {
-                    await open('http://localhost:3001');
-                    console.log('📊 Dashboard opened in browser');
-                } catch {
-                    console.log('📊 Dashboard available at http://localhost:3001');
+            const autoStartDefaultBot = process.env.AUTO_START_DEFAULT_BOT === 'true';
+            const autoRestoreEnabledBots = process.env.AUTO_RESTORE_ENABLED_BOTS === 'true';
+            let startedCount = 0;
+
+            if (autoStartDefaultBot) {
+                const defaultConfig = BotConfigs.getOrCreateDefaultConfig(config, this.mode);
+                const result = await botManager.startBot(defaultConfig, this.userId);
+                if (result.success) {
+                    startedCount++;
+                    console.log('Default bot auto-started from .env');
+                } else {
+                    console.error('Default bot auto-start failed:', result.error);
                 }
-            }, 2000);
+            } else {
+                // Ensure default exists for quick manual start from UI/CLI
+                BotConfigs.getOrCreateDefaultConfig(config, this.mode);
+                console.log('AUTO_START_DEFAULT_BOT is disabled; use dashboard to start bots.');
+            }
+
+            if (autoRestoreEnabledBots) {
+                const runningByUserId = getRunningConfigsByUserId();
+                for (const [uid, configIds] of Object.entries(runningByUserId)) {
+                    const isDefaultUser = uid === this.userId;
+                    const agent = llmCapitalManager.getAgentByUserId(uid);
+                    const isActiveAgent = agent && agent.status === 'active';
+                    if (!isDefaultUser && !isActiveAgent) continue;
+                    for (const configId of configIds) {
+                        const cfg = BotConfigs.getConfig(configId);
+                        if (!cfg) continue;
+                        const result = await botManager.startBot(cfg, uid);
+                        if (result.success) {
+                            startedCount++;
+                            console.log(`Restored bot for ${uid}: ${cfg.name}`);
+                        } else {
+                            console.error(`Failed restoring ${cfg.name} for ${uid}:`, result.error);
+                        }
+                    }
+                }
+                if (startedCount === 0 && Object.keys(runningByUserId).length === 0) {
+                    const enabledConfigs = BotConfigs.getAllConfigs().filter(c => c.enabled && c.id !== 'default');
+                    for (const cfg of enabledConfigs) {
+                        const result = await botManager.startBot(cfg, this.userId);
+                        if (result.success) {
+                            startedCount++;
+                            console.log(`Restored enabled bot: ${cfg.name}`);
+                        } else {
+                            console.error(`Failed restoring bot ${cfg.name}:`, result.error);
+                        }
+                    }
+                }
+            }
+
+            this.isRunning = true;
+            console.log(`Control plane ready. Running instances started on boot: ${startedCount}`);
+
+            if (process.env.AUTO_OPEN_DASHBOARD !== 'false') {
+                setTimeout(async () => {
+                    try {
+                        await open('http://localhost:3001');
+                        console.log('📊 Dashboard opened in browser');
+                    } catch {
+                        console.log('📊 Dashboard available at http://localhost:3001');
+                    }
+                }, 2000);
+            }
 
             process.on('SIGINT', () => this.stop());
             process.on('SIGTERM', () => this.stop());

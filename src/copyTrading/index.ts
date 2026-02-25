@@ -1,6 +1,7 @@
 import { Client } from 'xrpl';
 import { getClient } from '../xrpl/client';
-import { getWallet, getBalance, getTokenBalances } from '../xrpl/wallet';
+import { getBalance, getTokenBalances } from '../xrpl/wallet';
+import { getWalletForUser } from '../xrpl/walletProvider';
 import { IUser } from '../database/models';
 import { User, UserModel } from '../database/user';
 import { checkTraderTransactions } from './monitor';
@@ -15,8 +16,11 @@ import { TradeInfo } from '../types';
 import config from '../config';
 import { checkSufficientBalance, checkPositionLimit, getAccountStatus, logAccountStatus } from '../utils/safetyChecks';
 import type { BotConfiguration } from '../database/botConfigs';
+import { canExecuteXrpTrade, recordExecutedTrade } from '../llmCapital/guards';
+import { llmAllowsTrade } from '../llmCapital/llmDecision';
 
 let copyTradingIntervals = new Map<string, NodeJS.Timeout>();
+const monitorLocks = new Set<string>();
 let isRunning: boolean = false;
 
 const copyOverlay = new Map<string, Pick<BotConfiguration, 'copyTrading' | 'trading'>>();
@@ -105,7 +109,7 @@ export async function startCopyTrading(userId: string, options?: StartCopyTradin
         }
 
         const client = await getClient();
-        const wallet = getWallet();
+        const wallet = getWalletForUser(userId);
         const xrpBalance = await getBalance(client, wallet.address);
         const tokenBalances = await getTokenBalances(client, wallet.address);
 
@@ -139,11 +143,15 @@ export async function startCopyTrading(userId: string, options?: StartCopyTradin
         const userModel = new UserModel(user);
         await userModel.save();
 
-        const interval = setInterval(async () => {
+        const runMonitor = async () => {
+            if (!copyTradingIntervals.has(userId)) return;
             await monitorTraders(userId);
-        }, effective.checkInterval);
+            const timeout = setTimeout(runMonitor, effective.checkInterval);
+            copyTradingIntervals.set(userId, timeout);
+        };
 
-        copyTradingIntervals.set(userId, interval);
+        const timeout = setTimeout(runMonitor, effective.checkInterval);
+        copyTradingIntervals.set(userId, timeout);
         isRunning = true;
 
         return { success: true };
@@ -157,9 +165,10 @@ export async function stopCopyTrading(userId: string): Promise<Result> {
     try {
         const interval = copyTradingIntervals.get(userId);
         if (interval) {
-            clearInterval(interval);
+            clearTimeout(interval);
             copyTradingIntervals.delete(userId);
         }
+        monitorLocks.delete(userId);
 
         const user = await User.findOne({ userId });
         if (user) {
@@ -182,12 +191,17 @@ export async function stopCopyTrading(userId: string): Promise<Result> {
 }
 
 async function monitorTraders(userId: string): Promise<void> {
+    if (monitorLocks.has(userId)) {
+        return;
+    }
+
+    monitorLocks.add(userId);
     try {
         const user = await User.findOne({ userId });
         if (!user || !user.copyTraderActive) {
             const interval = copyTradingIntervals.get(userId);
             if (interval) {
-                clearInterval(interval);
+                clearTimeout(interval);
                 copyTradingIntervals.delete(userId);
             }
             return;
@@ -205,6 +219,8 @@ async function monitorTraders(userId: string): Promise<void> {
         }
     } catch (error) {
         console.error('Error monitoring traders:', error instanceof Error ? error.message : 'Unknown error');
+    } finally {
+        monitorLocks.delete(userId);
     }
 }
 
@@ -217,6 +233,7 @@ async function checkAndCopyTrades(
     try {
         const newTrades = await checkTraderTransactions(
             client,
+            user.userId,
             traderAddress,
             user.copyTradingStartTime,
             effective.maxTransactionsToCheck
@@ -238,7 +255,7 @@ async function checkAndCopyTrades(
                 continue;
             }
 
-            await executeCopyTrade(client, user, traderAddress, tradeInfo, tradeAmount, txHash, effective);
+            await executeCopyTrade(client, user, traderAddress, tradeInfo, tradeAmount, txHash, effective, user.userId);
         }
     } catch (error) {
         console.error(`Error checking trades for ${traderAddress}:`, error instanceof Error ? error.message : 'Unknown error');
@@ -252,13 +269,26 @@ async function executeCopyTrade(
     tradeInfo: TradeInfo,
     tradeAmount: number,
     originalTxHash: string,
-    effective: EffectiveCopyConfig
+    effective: EffectiveCopyConfig,
+    userId: string
 ): Promise<void> {
     try {
-        const wallet = getWallet();
+        const wallet = getWalletForUser(userId);
 
         // Safety check for buy trades
         if (tradeInfo.type === 'buy') {
+            const llmGuard = canExecuteXrpTrade(userId, 'copyTrading', tradeAmount);
+            if (!llmGuard.allowed) {
+                console.error(`❌ LLM policy blocked copy trade: ${llmGuard.reason}`);
+                return;
+            }
+
+            const llmOk = await llmAllowsTrade(userId, 'copyTrading', tradeAmount, { description: 'copy trade' });
+            if (!llmOk.allowed) {
+                console.error(`❌ LLM service declined copy trade: ${llmOk.reason}`);
+                return;
+            }
+
             const balanceCheck = await checkSufficientBalance(client, wallet.address, tradeAmount);
             if (!balanceCheck.canTrade) {
                 console.error(`❌ Copy trade blocked: ${balanceCheck.reason}`);
@@ -286,6 +316,10 @@ async function executeCopyTrade(
         }
 
         if (copyResult && copyResult.success && copyResult.txHash) {
+            if (tradeInfo.type === 'buy') {
+                recordExecutedTrade(userId, 'copyTrading', tradeAmount);
+            }
+
             user.transactions.push({
                 type: `copy_${tradeInfo.type}`,
                 originalTxHash: originalTxHash,

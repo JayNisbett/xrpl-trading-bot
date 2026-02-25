@@ -21,6 +21,17 @@ interface RecentTransactionsProps {
 export default function RecentTransactions({ transactions, walletAddress = '' }: RecentTransactionsProps) {
   const recentTxs = [...transactions].slice(0, 50).reverse()
 
+  const parseTxDate = (value: string) => {
+    const raw = (value || '').toString()
+    const asNum = Number(raw)
+    if (!Number.isNaN(asNum) && raw.trim() !== '') {
+      // XRPL-style unix seconds can leak in here; convert to ms.
+      if (asNum > 0 && asNum < 1e12) return new Date(asNum * 1000)
+      return new Date(asNum)
+    }
+    return new Date(raw)
+  }
+
   const getTypeIcon = (type: string) => {
     switch (type) {
       case 'arbitrage': return '💱'
@@ -89,7 +100,10 @@ export default function RecentTransactions({ transactions, walletAddress = '' }:
 
               <div className="tx-right">
                 <div className="tx-time">
-                  {formatDistanceToNow(new Date(tx.timestamp), { addSuffix: true })}
+                  {(() => {
+                    const d = parseTxDate(tx.timestamp)
+                    return Number.isNaN(d.getTime()) ? 'time unavailable' : formatDistanceToNow(d, { addSuffix: true })
+                  })()}
                 </div>
                 {(tx.ourTxHash || tx.originalTxHash || (tx as any).txHash) ? (
                   <a 

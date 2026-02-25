@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { Socket } from 'socket.io-client'
 import toast from 'react-hot-toast'
+import { apiFetch } from '../lib/api'
 import BotPnLChart from '../components/BotPnLChart'
 import LogPanel from '../components/LogPanel'
 
@@ -50,7 +51,7 @@ export default function BotDetail({ socket }: BotDetailProps) {
     if (!botId) return
     
     try {
-      const response = await fetch(`http://localhost:3000/api/logs/bot/${botId}?limit=100`)
+      const response = await apiFetch(`/api/logs/bot/${botId}?limit=100`)
       if (response.ok) {
         const data = await response.json()
         const logs = data.logs || []
@@ -79,7 +80,7 @@ export default function BotDetail({ socket }: BotDetailProps) {
 
   const fetchBotInstance = async () => {
     try {
-      const response = await fetch('http://localhost:3000/api/instances')
+      const response = await apiFetch('/api/instances')
       if (response.ok) {
         const instances = await response.json()
         const found = instances.find((i: BotInstance) => i.id === botId)
@@ -101,7 +102,7 @@ export default function BotDetail({ socket }: BotDetailProps) {
     if (!botId) return
     
     try {
-      const response = await fetch(`http://localhost:3000/api/instances/${botId}/stop`, {
+      const response = await apiFetch(`/api/instances/${botId}/stop`, {
         method: 'POST'
       })
       
@@ -121,7 +122,7 @@ export default function BotDetail({ socket }: BotDetailProps) {
     if (!botId) return
     
     try {
-      const response = await fetch(`http://localhost:3000/api/instances/${botId}/restart`, {
+      const response = await apiFetch(`/api/instances/${botId}/restart`, {
         method: 'POST'
       })
       

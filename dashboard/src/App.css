@@ -25,7 +25,7 @@
 
 body {
 	font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-	background: var(--bg-primary);
+	background: radial-gradient(circle at top right, #1b2a44 0%, var(--bg-primary) 35%);
 	color: var(--text-primary);
 	line-height: 1.6;
 }
@@ -99,6 +99,39 @@ h1 {
 
 .status-indicator.disconnected .dot {
 	background: var(--loss);
+}
+
+.system-health-bar {
+  display: flex;
+  gap: 8px;
+}
+
+.health-pill {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  letter-spacing: 0.2px;
+  color: var(--text-secondary);
+}
+
+.health-pill.ok {
+  border-color: rgba(34,197,94,0.4);
+  color: #86efac;
+  background: rgba(34,197,94,0.08);
+}
+
+.health-pill.down {
+  border-color: rgba(239,68,68,0.4);
+  color: #fca5a5;
+  background: rgba(239,68,68,0.08);
+}
+
+.route-loading {
+  padding: 18px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  color: var(--text-secondary);
 }
 
 @keyframes pulse {
